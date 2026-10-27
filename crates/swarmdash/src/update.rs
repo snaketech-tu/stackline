@@ -431,4 +431,14 @@ mod tests {
         assert_eq!(versions, ["0.10.0", "0.3.0"]);
         assert_eq!(got[0].name, "v0.10.0");
     }
+
+    #[test]
+    fn built_in_key_is_a_minisign_key() {
+        let key = PUBKEY.trim();
+        if key.is_empty() {
+            return;
+        }
+        let text = String::from_utf8(base64::engine::general_purpose::STANDARD.decode(key).unwrap()).unwrap();
+        minisign_verify::PublicKey::decode(&text).unwrap();
+    }
 }
