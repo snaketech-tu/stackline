@@ -1,0 +1,42 @@
+# A small Compose project that writes the log formats swarmdash understands.
+# Start it with `docker compose -p demo up -d` and point swarmdash at this computer.
+services:
+  app:
+    image: alpine:3.20
+    command: ["/bin/sh", "/logs.sh"]
+    environment: { KIND: ecs, DELAY: "0.7" }
+    volumes: ["./logs.sh:/logs.sh:ro"]
+    deploy: { replicas: 2 }
+  shop:
+    image: alpine:3.20
+    command: ["/bin/sh", "/logs.sh"]
+    environment: { KIND: logback, DELAY: "0.5" }
+    volumes: ["./logs.sh:/logs.sh:ro"]
+    deploy: { replicas: 2 }
+  worker:
+    image: alpine:3.20
+    command: ["/bin/sh", "/logs.sh"]
+    environment: { KIND: python, DELAY: "1.3" }
+    volumes: ["./logs.sh:/logs.sh:ro"]
+  caddy:
+    image: alpine:3.20
+    command: ["/bin/sh", "/logs.sh"]
+    environment: { KIND: caddy, DELAY: "0.4" }
+    volumes: ["./logs.sh:/logs.sh:ro"]
+    ports: ["8443:443"]
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_PASSWORD: demo }
+  pgclient:
+    image: postgres:16-alpine
+    depends_on: [postgres]
+    environment: { PGPASSWORD: demo }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        sleep 8
+        psql -h postgres -U postgres -c "CREATE TABLE IF NOT EXISTS users (email text UNIQUE)" -c "INSERT INTO users VALUES ('a@example.com') ON CONFLICT DO NOTHING"
+        while true; do psql -h postgres -U postgres -c "INSERT INTO users VALUES ('a@example.com')" >/dev/null 2>&1; sleep 9; done
+  migrate:
+    image: alpine:3.20
+    command: ["/bin/sh", "-c", "echo 'Applied 3 migrations'"]
