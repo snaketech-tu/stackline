@@ -159,19 +159,24 @@ fn map_swarm(services: &[Value], tasks: &[Value], hostnames: &HashMap<String, St
         }
     }
 
-    // The most recent failure per slot, shown while a replacement task is starting.
+    // The most recent failure per slot, shown while a replacement task is starting,
+    // and how many tasks of that slot failed.
     let mut last_failure: HashMap<(String, String), (i64, String)> = HashMap::new();
+    let mut failures: HashMap<(String, String), u32> = HashMap::new();
     for t in tasks {
-        let err = t["Status"]["Err"].as_str().unwrap_or("");
-        if err.is_empty() {
-            continue;
-        }
         let slot = match t["Slot"].as_u64() {
             Some(n) if n > 0 => n.to_string(),
             _ => s(&t["NodeID"]),
         };
-        let when = ts(&t["Status"]["Timestamp"]);
         let key = (s(&t["ServiceID"]), slot);
+        if matches!(s(&t["Status"]["State"]).as_str(), "failed" | "rejected") {
+            *failures.entry(key.clone()).or_default() += 1;
+        }
+        let err = t["Status"]["Err"].as_str().unwrap_or("");
+        if err.is_empty() {
+            continue;
+        }
+        let when = ts(&t["Status"]["Timestamp"]);
         if last_failure.get(&key).is_none_or(|(w, _)| when > *w) {
             last_failure.insert(key, (when, err.to_string()));
         }
@@ -211,6 +216,11 @@ fn map_swarm(services: &[Value], tasks: &[Value], hostnames: &HashMap<String, St
                     container_name: None,
                     since: ts_opt(&st["Timestamp"]),
                     exit_code: st["ContainerStatus"]["ExitCode"].as_i64().filter(|c| *c != 0),
+                    failures: {
+                        let n = failures.get(&(id.clone(), slot.clone())).copied().unwrap_or(0);
+                        // The current task is counted when it failed itself.
+                        if matches!(s(&st["State"]).as_str(), "failed" | "rejected") { n.saturating_sub(1) } else { n }
+                    },
                     cpu_percent: None,
                     mem_used: None,
                 }
@@ -307,6 +317,7 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
                 container_id: Some(s(&c["Id"])),
                 container_name: Some(container_name(c)),
                 since: c["Created"].as_i64().map(|t| t * 1000),
+                failures: 0,
                 cpu_percent: None,
                 mem_used: None,
             }

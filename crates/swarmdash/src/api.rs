@@ -189,6 +189,8 @@ struct LogParams {
     from: i64,
     to: i64,
     q: Option<String>,
+    /// Comma-separated stacks and full service names from the source picker.
+    /// A line matches when it comes from any of them.
     stack: Option<String>,
     service: Option<String>,
     /// Comma-separated: ERROR,WARN,INFO,DEBUG
@@ -202,12 +204,11 @@ struct LogParams {
 impl LogParams {
     fn filter(&self) -> LogFilter {
         let mut f = LogFilter { from: self.from * 1000, to: self.to * 1000, ..Default::default() };
-        if let Some(s) = self.stack.as_deref().filter(|s| !s.is_empty() && *s != "all") {
-            f.stacks.push(s.to_string());
-        }
-        if let Some(s) = self.service.as_deref().filter(|s| !s.is_empty() && *s != "all") {
-            f.exact_services.push(s.to_string());
-        }
+        let list = |v: &Option<String>| -> Vec<String> {
+            v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty() && *s != "all").map(str::to_string).collect()
+        };
+        f.pick_stacks = list(&self.stack);
+        f.exact_services = list(&self.service);
         if let Some(l) = &self.levels {
             f.levels = l.split(',').filter_map(Level::parse_name).collect();
             f.no_levels = f.levels.is_empty();

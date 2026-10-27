@@ -63,8 +63,11 @@ pub struct LogFilter {
     pub stacks: Vec<String>,
     /// Substring match, from the search box.
     pub services: Vec<String>,
-    /// Exact full service names, from the service picker.
+    /// Exact full service names, from the source picker. Matches any of these
+    /// services or any service of `pick_stacks`.
     pub exact_services: Vec<String>,
+    /// Whole stacks from the source picker, combined with `exact_services` by OR.
+    pub pick_stacks: Vec<String>,
     pub levels: Vec<Level>,
     pub nodes: Vec<String>,
     pub replicas: Vec<String>,
@@ -124,7 +127,18 @@ impl LogFilter {
             w.push(format!("({})", parts.join(" OR ")));
         };
         any_of("service", &self.services, true, &mut w, &mut p);
-        any_of("service", &self.exact_services, false, &mut w, &mut p);
+        if !self.exact_services.is_empty() || !self.pick_stacks.is_empty() {
+            let mut parts = Vec::new();
+            for v in &self.exact_services {
+                parts.push("service = ?");
+                p.push(Sql::Text(v.clone()));
+            }
+            for v in &self.pick_stacks {
+                parts.push("stack = ?");
+                p.push(Sql::Text(v.clone()));
+            }
+            w.push(format!("({})", parts.join(" OR ")));
+        }
         any_of("stack", &self.stacks, false, &mut w, &mut p);
         any_of("node", &self.nodes, true, &mut w, &mut p);
         any_of("replica", &self.replicas, false, &mut w, &mut p);
@@ -149,6 +163,40 @@ impl LogFilter {
         }
         (w.join(" AND "), p)
     }
+}
+
+/// Error groups whose first entry is in the last 15 minutes. Needs at least an
+/// hour of stored history, or every group would look new after a fresh start.
+fn new_groups(db: &Connection, conn: &str, now: i64, oldest: Option<i64>) -> Result<Vec<NewGroup>> {
+    const WINDOW: i64 = 15 * 60_000_000;
+    const HISTORY: i64 = 3_600_000_000;
+    if oldest.is_none_or(|o| o > now - HISTORY) {
+        return Ok(Vec::new());
+    }
+    let since = now - WINDOW;
+    let mut st = db.prepare_cached(
+        "SELECT fp, COUNT(*), MIN(ts), MIN(service), MAX(id) FROM entries
+         WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL GROUP BY fp",
+    )?;
+    let recent = st
+        .query_map(params![conn, since, now, Level::Error.as_i64()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, i64>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut before = db.prepare_cached("SELECT 1 FROM entries WHERE conn = ?1 AND fp = ?2 AND ts < ?3 LIMIT 1")?;
+    let mut pat = db.prepare_cached("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2")?;
+    let mut text = db.prepare_cached("SELECT text FROM entries WHERE id = ?1")?;
+    let mut out = Vec::new();
+    for (fp, count, first, service, last_id) in recent {
+        if before.exists(params![conn, fp, since])? {
+            continue;
+        }
+        let pattern = pat.query_row(params![conn, fp], |r| r.get(0)).optional()?.unwrap_or_default();
+        let sample = text.query_row(params![last_id], |r| r.get(0)).optional()?.unwrap_or_default();
+        out.push(NewGroup { fp, pattern, count, service, first, sample });
+    }
+    out.sort_by_key(|g| std::cmp::Reverse(g.count));
+    Ok(out)
 }
 
 fn escape_like(s: &str) -> String {
@@ -239,6 +287,23 @@ pub struct ErrorSummary {
     pub last_hour: u64,
     pub prev_hour: u64,
     pub spark: Vec<u64>,
+    /// The oldest stored entry of this connection (µs), for the "Auto" time range.
+    pub oldest: Option<i64>,
+    /// Error groups seen for the first time in the last 15 minutes.
+    pub new_groups: Vec<NewGroup>,
+}
+
+/// An error group that did not exist before the last 15 minutes.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NewGroup {
+    pub fp: String,
+    pub pattern: String,
+    pub count: u64,
+    pub service: String,
+    /// µs
+    pub first: i64,
+    pub sample: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,7 +517,9 @@ impl Store {
             let (b, n) = row?;
             spark[b.clamp(0, 23) as usize] += n;
         }
-        Ok(ErrorSummary { by_service, last_hour, prev_hour, spark })
+        let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
+        let new_groups = new_groups(&db, conn, now, oldest)?;
+        Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups })
     }
 
     /// Writes every matching entry, oldest first. Returns the number written.
@@ -661,5 +728,48 @@ mod tests {
         assert_eq!(store.query("c1", &all, 10, 100).unwrap().total, 10);
         store.set_cursor("c1", "x", 5).unwrap();
         assert_eq!(store.cursor("c1", "x").unwrap(), Some(5));
+    }
+
+    #[test]
+    fn picked_stacks_and_services_combine_with_or() {
+        let store = Store::open_in_memory().unwrap();
+        let base = 1_700_000_000_000_000i64;
+        let mut web = src("web_app", "1");
+        web.stack = "web".into();
+        store.insert("c1", &src("shop_api", "1"), &entries(&[(base, "INFO api")])).unwrap();
+        store.insert("c1", &src("shop_worker", "1"), &entries(&[(base + 1, "INFO worker")])).unwrap();
+        store.insert("c1", &web, &entries(&[(base + 2, "INFO web")])).unwrap();
+        let f = |stacks: &[&str], services: &[&str]| LogFilter {
+            from: base,
+            to: base + 10,
+            pick_stacks: stacks.iter().map(|s| s.to_string()).collect(),
+            exact_services: services.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        assert_eq!(store.query("c1", &f(&["web"], &["shop_api"]), 1, 10).unwrap().total, 2);
+        assert_eq!(store.query("c1", &f(&["shop"], &[]), 1, 10).unwrap().total, 2);
+        assert_eq!(store.query("c1", &f(&[], &["shop_worker", "web_app"]), 1, 10).unwrap().total, 2);
+    }
+
+    #[test]
+    fn new_groups_need_history_and_a_first_sighting() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let min = 60_000_000i64;
+        let s1 = src("shop_api", "1");
+        let old = "2026-10-27 ERROR Upstream timed out after 5000ms";
+        let fresh = "2026-10-27 ERROR Cannot connect to redis:6379";
+        store
+            .insert("c1", &s1, &entries(&[(now - 120 * min, old), (now - 5 * min, old), (now - 4 * min, fresh), (now - 2 * min, fresh)]))
+            .unwrap();
+        let s = store.error_summary("c1", now).unwrap();
+        assert_eq!(s.oldest, Some(now - 120 * min));
+        assert_eq!(s.new_groups.len(), 1, "{:?}", s.new_groups);
+        assert_eq!((s.new_groups[0].count, s.new_groups[0].service.as_str()), (2, "shop_api"));
+        assert!(s.new_groups[0].sample.contains("redis"));
+
+        // Less than an hour of history: nothing counts as new yet.
+        store.insert("c2", &s1, &entries(&[(now - 10 * min, old), (now - 4 * min, fresh)])).unwrap();
+        assert!(store.error_summary("c2", now).unwrap().new_groups.is_empty());
     }
 }

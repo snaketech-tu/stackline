@@ -125,6 +125,8 @@ pub struct Task {
     pub container_name: Option<String>,
     pub since: Option<i64>,
     pub exit_code: Option<i64>,
+    /// Earlier tasks of this slot that failed (swarm keeps a few in its history).
+    pub failures: u32,
     pub cpu_percent: Option<f64>,
     pub mem_used: Option<u64>,
 }
