@@ -28,6 +28,7 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           grep -q "^version = \"$v\"" Cargo.toml || { echo "::error::Cargo.toml has a different version than the tag $GITHUB_REF_NAME"; exit 1; }
           [ -s crates/swarmdash/updater.pub ] || { echo "::error::crates/swarmdash/updater.pub is empty. See RELEASING.md"; exit 1; }
+          [ "$(jq -r .plugins.updater.pubkey desktop/src-tauri/tauri.conf.json)" = "$(tr -d '\r\n' < crates/swarmdash/updater.pub)" ] || { echo "::error::plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json differs from crates/swarmdash/updater.pub"; exit 1; }
           [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is missing. See RELEASING.md"; exit 1; }
       - name: Release notes from CHANGELOG.md
         run: |
