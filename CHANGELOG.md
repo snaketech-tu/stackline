@@ -3,7 +3,7 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
-## Unreleased
+## 0.2.0
 
 Fewer clicks everywhere.
 
