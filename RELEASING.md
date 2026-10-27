@@ -23,7 +23,9 @@ Then:
    - `TAURI_SIGNING_PRIVATE_KEY`: the contents of `~/.tauri/swarmdash.key`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password you chose
 2. Put the contents of `~/.tauri/swarmdash.key.pub` into
-   `crates/swarmdash/updater.pub` and commit it.
+   `crates/swarmdash/updater.pub` and into `plugins.updater.pubkey` in
+   `desktop/src-tauri/tauri.conf.json`, then commit both. CI checks that
+   they are the same.
 
 Keep the private key and its password somewhere safe. Without them no future
 release can be installed as an update, and users would have to download the
