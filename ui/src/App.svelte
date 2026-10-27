@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { app, VIEWS, type Theme } from './lib/state.svelte'
+  import { app, VIEWS, type View } from './lib/state.svelte'
   import Icon from './components/Icon.svelte'
   import Overview from './views/Overview.svelte'
   import Nodes from './views/Nodes.svelte'
@@ -10,20 +10,18 @@
   import Prefs from './views/Prefs.svelte'
   import ServiceDrawer from './components/ServiceDrawer.svelte'
   import NodeDrawer from './components/NodeDrawer.svelte'
-  import DownloadDrawer from './components/DownloadDrawer.svelte'
+  import ConnectionDrawer from './components/ConnectionDrawer.svelte'
   import UpdateDrawer from './components/UpdateDrawer.svelte'
+  import ConnMenu from './components/ConnMenu.svelte'
+  import Palette from './components/Palette.svelte'
 
   onMount(() => {
     app.init()
   })
 
+  // On a single node the overview's host card says what the nodes page would.
+  let views = $derived(VIEWS.filter(([v]) => v !== 'nodes' || !app.snap || app.snap.nodes.length > 1 || app.view === 'nodes'))
   let title = $derived(VIEWS.find(([v]) => v === app.view)?.[1] ?? '')
-  let dot = $derived.by(() => {
-    if (!app.conn || app.conn.status === 'connecting') return 'off'
-    if (app.conn.status === 'error') return 'err'
-    const bad = app.services.some((s) => s.desired > 0 && s.running < s.desired) || app.snap?.nodes.some((n) => n.state !== 'ready')
-    return bad ? 'warn' : ''
-  })
   let connLine = $derived.by(() => {
     const c = app.conn
     if (!c) return 'connecting…'
@@ -33,9 +31,34 @@
   })
   let latest = $derived(app.update?.releases[0])
   let showUpdate = $derived(app.updateAvailable && !!latest && (app.dismissed !== latest.version || app.update?.phase !== 'available'))
+  const THEME_ICON = { system: 'monitor', light: 'sun', dark: 'moon' } as const
+  const THEME_NAME = { system: 'follow system', light: 'light', dark: 'dark' } as const
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform)
+
+  // Two-key shortcuts: g then o / s / l / n / c / p.
+  const GO: Record<string, View> = { o: 'overview', s: 'stacks', l: 'logs', n: 'nodes', c: 'connections', p: 'prefs' }
+  let gAt = 0
 
   function keydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && app.drawer) app.drawer = null
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      e.preventDefault()
+      app.palette = !app.palette
+      return
+    }
+    if (e.key === 'Escape') {
+      if (app.palette) app.palette = false
+      else if (app.drawer) app.drawer = null
+      return
+    }
+    const tag = (document.activeElement as HTMLElement | null)?.tagName
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.palette || e.ctrlKey || e.metaKey || e.altKey) return
+    if (gAt && Date.now() - gAt < 1000 && GO[e.key]) {
+      gAt = 0
+      app.drawer = null
+      app.go(GO[e.key])
+    } else {
+      gAt = e.key === 'g' ? Date.now() : 0
+    }
   }
 </script>
 
@@ -48,7 +71,7 @@
       <div>swarmdash<small>Read-only</small></div>
     </div>
     <nav class="nav">
-      {#each VIEWS as [v, label] (v)}
+      {#each views as [v, label] (v)}
         <a href="#{v}" aria-current={app.view === v ? 'page' : undefined}>
           <Icon name={v} /><span class="t">{label}</span>
           {#if v === 'logs' && app.errors?.lastHour}<span class="cnt hide-sm" title="Errors in the last hour">{app.errors.lastHour}</span>{/if}
@@ -69,14 +92,8 @@
   <div class="main">
     <header class="top">
       <h1>{title}</h1>
-      <label class="ctl" title="Switch connection">
-        <span class="dot {dot}"></span>
-        <select style="border:0;background:transparent;outline:0;cursor:pointer;font-weight:600" value={app.activeId}
-          onchange={(e) => app.select((e.target as HTMLSelectElement).value)} aria-label="Connection">
-          {#each app.connections as c (c.id)}<option value={c.id}>{c.name}</option>{/each}
-        </select>
-      </label>
-      <span class="conn hide-sm">{connLine}</span>
+      <ConnMenu />
+      <span class="conn">{connLine}</span>
       <span class="spacer"></span>
       {#if showUpdate && latest}
         <button class="ctl update-pill" onclick={() => (app.drawer = { kind: 'update' })}>
@@ -84,9 +101,12 @@
           {#if app.update?.phase === 'downloading' || app.update?.phase === 'installing'}Updating…{:else if app.update?.phase === 'restarting'}Restarting…{:else}Update to {latest.version}{/if}
         </button>
       {/if}
-      <select class="ctl theme-select" aria-label="Theme" value={app.theme} onchange={(e) => app.setTheme((e.target as HTMLSelectElement).value as Theme)}>
-        <option value="system">Theme: system</option><option value="light">Theme: light</option><option value="dark">Theme: dark</option>
-      </select>
+      <button class="ctl cmdk" onclick={() => (app.palette = true)} aria-label="Jump to a service, stack or page">
+        <Icon name="search" size={14} /><span class="t">Jump to a service, stack or page</span><kbd>{mac ? '⌘' : 'Ctrl'} K</kbd>
+      </button>
+      <button class="ctl icon" onclick={() => app.cycleTheme()} title="Theme: {THEME_NAME[app.theme]}. Click to change." aria-label="Theme: {THEME_NAME[app.theme]}">
+        <Icon name={THEME_ICON[app.theme]} size={15} />
+      </button>
     </header>
     <main class="view">
       {#if app.fatal}
@@ -113,9 +133,12 @@
   </div>
 </div>
 
-{#if app.drawer?.kind === 'service'}<ServiceDrawer key={app.drawer.key} />
+{#if app.drawer?.kind === 'service'}
+  {#key app.drawer.key}<ServiceDrawer key={app.drawer.key} tab={app.drawer.tab} />{/key}
 {:else if app.drawer?.kind === 'node'}<NodeDrawer id={app.drawer.id} />
-{:else if app.drawer?.kind === 'download'}<DownloadDrawer />
+{:else if app.drawer?.kind === 'connection'}<ConnectionDrawer id={app.drawer.id} />
 {:else if app.drawer?.kind === 'update'}<UpdateDrawer />{/if}
+
+{#if app.palette}<Palette />{/if}
 
 {#if app.toast}<div class="toast" class:err={app.toast.kind === 'err'} role="status">{app.toast.text}</div>{/if}

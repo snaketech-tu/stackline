@@ -19,7 +19,7 @@ export interface Task {
   id: string; slot: string; node: string; state: string; desiredState: string
   message: string | null; error: string | null; health: string | null
   containerId: string | null; containerName: string | null; since: number | null
-  exitCode: number | null; cpuPercent: number | null; memUsed: number | null
+  exitCode: number | null; failures: number; cpuPercent: number | null; memUsed: number | null
 }
 
 export interface Service {
@@ -67,7 +67,12 @@ export interface LogResponse { result: LogResult; syncedAt: number | null; logEr
 export interface TestStep { label: string; ok: boolean; detail: string | null; ms: number }
 export interface StoreStats { bytes: number; entries: number; oldest: number | null }
 export interface SnapshotResponse { state: ConnState; snapshot: Snapshot | null; pins: string[] }
-export interface ErrorSummary { byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[] }
+export interface NewGroup { fp: string; pattern: string; count: number; service: string; first: number; sample: string }
+export interface ErrorSummary {
+  byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[]
+  /** Oldest stored entry of the connection, µs. */
+  oldest: number | null; newGroups: NewGroup[]
+}
 
 export type UpdatePhase = 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'restarting' | 'failed'
 export interface Release { version: string; name: string; notes: string; publishedAt: string | null; url: string }
