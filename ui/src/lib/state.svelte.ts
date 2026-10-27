@@ -17,25 +17,29 @@ export const VIEWS: [View, string][] = [
   ['prefs', 'Preferences'],
 ]
 
+export type ServiceTab = 'overview' | 'logs' | 'errors'
 export type Drawer =
-  | { kind: 'service'; key: string }
+  | { kind: 'service'; key: string; tab: ServiceTab }
   | { kind: 'node'; id: string }
-  | { kind: 'download' }
+  | { kind: 'connection'; id: string | null }
   | { kind: 'update' }
   | null
 
 export type Theme = 'system' | 'light' | 'dark'
-export type Preset = '15m' | '1h' | '3h' | '24h' | '7d'
-export const PRESETS: Record<Preset, number> = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440, '7d': 10080 }
+export type Preset = 'auto' | '15m' | '1h' | '3h' | '24h' | '7d'
+/** Minutes per fixed preset. `auto` starts at the oldest stored line instead. */
+export const PRESETS: Record<Exclude<Preset, 'auto'>, number> = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440, '7d': 10080 }
+export const LEVELS: Level[] = ['ERROR', 'WARN', 'INFO', 'DEBUG']
+export type StackFilter = 'all' | 'problems' | 'pinned'
 
-function load(key: string): string | null {
+export function load(key: string): string | null {
   try {
     return localStorage.getItem(key)
   } catch {
     return null
   }
 }
-function save(key: string, v: string) {
+export function save(key: string, v: string) {
   try {
     localStorage.setItem(key, v)
   } catch {
@@ -48,23 +52,30 @@ export const pinKey = (s: { stack: string; name: string }) => `${s.stack}/${s.na
 
 /** Filters of the logs view. Kept here so they survive switching views. */
 class LogsState {
-  levels = new SvelteSet<Level>(['ERROR', 'WARN', 'INFO', 'DEBUG'])
-  stack = $state('all')
-  service = $state('all')
+  levels = new SvelteSet<Level>(LEVELS)
+  /** Picked sources: full service names, or `stack:<name>` for a whole stack. Any of them matches. */
+  sources = new SvelteSet<string>()
   q = $state('')
-  preset = $state<Preset | null>('3h')
+  /** The error group (fingerprint) the stream is narrowed to. */
+  group = $state<string | null>(null)
+  preset = $state<Preset | null>('auto')
   from = $state(Date.now() - 3 * 3600e3)
   to = $state(Date.now())
   live = $state(false)
   collapse = $state(true)
-  openGroups = new SvelteSet<string>()
   openRows = new SvelteSet<number>()
+
+  /** Where `auto` starts: the oldest stored line, within the retention, at least 15 minutes back. */
+  autoFrom: () => number
+  constructor(autoFrom: () => number) {
+    this.autoFrom = autoFrom
+  }
 
   /** The time range to query: a preset ends now, a zoom is fixed. */
   window(): [number, number] {
     if (this.preset) {
       const to = Date.now()
-      return [to - PRESETS[this.preset] * 60e3, to]
+      return [this.preset === 'auto' ? Math.min(this.autoFrom(), to - 15 * 60e3) : to - PRESETS[this.preset] * 60e3, to]
     }
     return [this.from, this.to]
   }
@@ -73,16 +84,18 @@ class LogsState {
   params(): Record<string, string | number> {
     const [from, to] = this.window()
     const p: Record<string, string | number> = { from: Math.floor(from), to: Math.ceil(to), levels: [...this.levels].join(',') }
-    if (this.q.trim()) p.q = this.q.trim()
-    if (this.stack !== 'all') p.stack = this.stack
-    if (this.service !== 'all') p.service = this.service
+    const q = [this.q.trim(), this.group ? `fp:${this.group}` : ''].filter(Boolean).join(' ')
+    if (q) p.q = q
+    const stacks = [...this.sources].filter((s) => s.startsWith('stack:')).map((s) => s.slice(6))
+    const services = [...this.sources].filter((s) => !s.startsWith('stack:'))
+    if (stacks.length) p.stack = stacks.join(',')
+    if (services.length) p.service = services.join(',')
     return p
   }
 
   setPreset(p: Preset) {
     this.preset = p
-    this.to = Date.now()
-    this.from = this.to - PRESETS[p] * 60e3
+    ;[this.from, this.to] = this.window()
   }
 
   zoom(from: number, to: number) {
@@ -92,14 +105,33 @@ class LogsState {
     this.to = to
   }
 
+  /** Click shows only that level; with `add` (Shift-click) it is switched on or off. */
+  pickLevel(l: Level, add: boolean) {
+    if (add) {
+      if (this.levels.has(l)) this.levels.delete(l)
+      else this.levels.add(l)
+      if (!this.levels.size) LEVELS.forEach((x) => this.levels.add(x))
+      return
+    }
+    const solo = this.levels.size === 1 && this.levels.has(l)
+    this.levels.clear()
+    for (const x of solo ? LEVELS : [l]) this.levels.add(x)
+  }
+
+  toggleSource(key: string) {
+    if (this.sources.has(key)) this.sources.delete(key)
+    else this.sources.add(key)
+  }
+
   reset() {
-    this.stack = 'all'
-    this.service = 'all'
+    this.sources.clear()
+    this.levels.clear()
+    LEVELS.forEach((l) => this.levels.add(l))
     this.q = ''
-    this.openGroups.clear()
+    this.group = null
     this.openRows.clear()
     this.live = false
-    this.setPreset('3h')
+    this.setPreset('auto')
   }
 }
 
@@ -115,6 +147,10 @@ class AppState {
   update = $state<UpdateState | null>(null)
   view = $state<View>('overview')
   drawer = $state<Drawer>(null)
+  palette = $state(false)
+  /** Filters of the stacks view, set from the overview too. */
+  stackFilter = $state<StackFilter>('all')
+  stackQ = $state('')
   theme = $state<Theme>((load('swarmdash-theme') as Theme) || 'system')
   toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null)
   /** Set when the API cannot be used at all (server gone, signed out). */
@@ -122,7 +158,12 @@ class AppState {
   now = $state(Date.now())
   /** The update banner was dismissed for this version. */
   dismissed = $state(load('swarmdash-update-dismissed') ?? '')
-  logs = new LogsState()
+  logs = new LogsState(() => {
+    const now = Date.now()
+    const keep = now - (this.settings?.retentionDays ?? 7) * 86400e3
+    const oldest = this.errors?.oldest ? this.errors.oldest / 1000 : now - 3 * 3600e3
+    return Math.max(keep, oldest)
+  })
 
   active = $derived(this.connections.find((c) => c.id === this.activeId))
 
@@ -245,6 +286,33 @@ class AppState {
     }
   }
 
+  /** The theme button in the top bar: system → light → dark → system. */
+  cycleTheme() {
+    this.setTheme(({ system: 'light', light: 'dark', dark: 'system' } as const)[this.theme])
+  }
+
+  openService(key: string, tab: ServiceTab = 'overview') {
+    this.drawer = { kind: 'service', key, tab }
+  }
+
+  /** Opens the logs view showing only these sources (full service names or `stack:<name>`). */
+  showLogs(sources: string[] = [], levels?: Level[]) {
+    this.logs.reset()
+    for (const s of sources) this.logs.sources.add(s)
+    if (levels) {
+      this.logs.levels.clear()
+      levels.forEach((l) => this.logs.levels.add(l))
+    }
+    this.drawer = null
+    this.go('logs')
+  }
+
+  /** Opens the logs view narrowed to one error group. */
+  showGroup(fp: string) {
+    this.showLogs()
+    this.logs.group = fp
+  }
+
   setTheme(t: Theme) {
     this.theme = t
     save('swarmdash-theme', t)
@@ -263,6 +331,15 @@ class AppState {
 
   async saveSettings(s: Settings) {
     this.settings = await put<Settings>('/settings', s)
+  }
+
+  async copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text)
+      this.notify('Copied to the clipboard.')
+    } catch {
+      this.notify('The clipboard is not available here.', 'err')
+    }
   }
 
   notify(text: string, kind: 'ok' | 'err' = 'ok') {

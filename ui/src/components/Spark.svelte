@@ -1,15 +1,14 @@
 <script lang="ts">
-  // Tiny bar sparkline for an error group.
-  let { values }: { values: number[] } = $props()
+  // Tiny bar sparkline for an error group. Empty buckets are faint stubs, so a
+  // single burst still reads as a chart.
+  let { values, warn = false }: { values: number[]; warn?: boolean } = $props()
   let m = $derived(Math.max(1, ...values))
+  let w = $derived(Math.max(1, values.length) * 2.5)
 </script>
 
-<svg width="72" height="18" viewBox="0 0 72 18" aria-hidden="true">
+<svg width={w} height="16" viewBox="0 0 {w} 16" aria-hidden="true" style="flex:none">
   {#each values as v, i (i)}
-    {#if v}
-      <rect x={i * 3} y={18 - (v / m) * 17} width="2" height={(v / m) * 17} fill="var(--err)" />
-    {:else}
-      <rect x={i * 3} y="17" width="2" height="1" fill="var(--line)" />
-    {/if}
+    {@const h = v ? Math.max(2, (v / m) * 15) : 1.5}
+    <rect x={i * 2.5} y={16 - h} width="1.6" height={h} rx="0.5" fill={v ? (warn ? 'var(--warn)' : 'var(--err)') : 'var(--line)'} />
   {/each}
 </svg>

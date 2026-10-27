@@ -1,14 +1,14 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
   import { api, query } from '../lib/api'
-  import { ago, bytes, pct, plural } from '../lib/format'
-  import { memPct, nodeDot, nodeRole, svcState } from '../lib/health'
+  import { ago, bytes, firstLine, hhmm, pct, plural, tidy } from '../lib/format'
+  import { memPct, nodeDot, nodeRole } from '../lib/health'
   import type { LogResponse, ServiceRef } from '../lib/types'
   import Ring from '../components/Ring.svelte'
   import ErrSpark from '../components/ErrSpark.svelte'
   import Histogram from '../components/Histogram.svelte'
   import Icon from '../components/Icon.svelte'
-  import PinnedTable from '../components/PinnedTable.svelte'
+  import ServiceTable from '../components/ServiceTable.svelte'
 
   let snap = $derived(app.snap!)
   let single = $derived(snap.nodes.length <= 1)
@@ -24,66 +24,102 @@
   let hostCpu = $derived(host.cpuPercent ?? snap.nodes[0]?.cpuPercent ?? null)
   let hostMem = $derived(memPct(host.memUsed, host.memTotal))
 
-  // Errors and warnings of the last 6 hours, refreshed with the snapshot.
+  // Errors and warnings of the last 6 hours (or since the oldest stored line), refreshed with the snapshot.
   let hist = $state<LogResponse | null>(null)
-  let windowEnd = $state(Date.now())
+  let win = $state({ from: Date.now() - 6 * 3600e3, to: Date.now() })
   $effect(() => {
     const id = app.activeId
     void app.snap?.fetchedAt
     const to = Date.now()
-    const from = to - 6 * 3600e3
+    const oldest = app.errors?.oldest ? app.errors.oldest / 1000 : 0
+    const from = Math.floor(Math.max(to - 6 * 3600e3, Math.min(oldest, to - 15 * 60e3)))
     api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from, to, levels: 'ERROR,WARN', buckets: 48, limit: 1 })}`)
       .then((r) => {
         hist = r
-        windowEnd = to
+        win = { from, to }
       })
       .catch(() => {})
   })
   let top = $derived(hist?.result.groups[0])
 
-  type Attn = { sev: 'err' | 'warn'; title: string; sub: string; onclick: () => void }
+  // The newest line of each service that has nothing running: usually the reason it fails.
+  let lastLines = $state<Record<string, string>>({})
+  let failing = $derived(services.filter((s) => s.running === 0 && s.desired > 0).slice(0, 6))
+  $effect(() => {
+    const id = app.activeId
+    void app.snap?.fetchedAt
+    const to = Date.now()
+    for (const s of failing) {
+      api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from: to - 6 * 3600e3, to, service: s.fullName, buckets: 1, limit: 1 })}`)
+        .then((r) => {
+          const e = r.result.entries[0]
+          if (e) lastLines[s.fullName] = tidy(firstLine(e.text))
+        })
+        .catch(() => {})
+    }
+  })
+
+  type Act = { label: string; run: () => void; ghost?: boolean }
+  type Attn = { sev: 'err' | 'warn'; title: string; pill?: [string, string]; why: string; acts: Act[] }
   let attn = $derived.by(() => {
     const out: Attn[] = []
     for (const n of snap.nodes) {
-      if (n.state !== 'ready') out.push({ sev: 'err', title: `Node <b>${esc(n.hostname)}</b> is ${esc(n.state)}`, sub: nodeRole(n), onclick: () => (app.drawer = { kind: 'node', id: n.id }) })
-      else if (n.availability !== 'active') out.push({ sev: 'warn', title: `Node <b>${esc(n.hostname)}</b> is set to ${esc(n.availability)}`, sub: 'No new tasks are scheduled here', onclick: () => (app.drawer = { kind: 'node', id: n.id }) })
+      const details = { label: 'Details', run: () => (app.drawer = { kind: 'node', id: n.id }) }
+      if (n.state !== 'ready') out.push({ sev: 'err', title: `Node <b>${esc(n.hostname)}</b> is ${esc(n.state)}`, why: nodeRole(n), acts: [details] })
+      else if (n.availability !== 'active') out.push({ sev: 'warn', title: `Node <b>${esc(n.hostname)}</b> is set to ${esc(n.availability)}`, why: 'No new tasks are scheduled here', acts: [details] })
     }
     const lastErr = (s: ServiceRef) => s.tasks.find((t) => t.error || (t.state !== 'running' && t.message))
+    const acts = (s: ServiceRef): Act[] => [
+      { label: 'Logs', run: () => app.openService(s.key, 'logs') },
+      { label: 'Details', run: () => app.openService(s.key), ghost: true },
+    ]
     for (const s of services) {
       if (s.running === 0 && s.desired > 0) {
         const t = lastErr(s)
-        out.push({ sev: 'err', title: `<b>${esc(s.fullName)}</b> has nothing running`, sub: `0/${s.desired}${t ? ' · ' + esc(t.error || t.message || '') : ''}`, onclick: () => open(s) })
+        const fails = s.tasks.reduce((a, t) => a + t.failures, 0)
+        const why = [t?.exitCode ? `exit ${t.exitCode}` : '', fails ? `${fails} earlier ${fails === 1 ? 'task' : 'tasks'} failed` : '', lastLines[s.fullName] ?? t?.error ?? t?.message ?? '']
+        out.push({ sev: 'err', title: `<b>${esc(s.fullName)}</b> has nothing running`, pill: ['err', `0/${s.desired}`], why: why.filter(Boolean).join(' · '), acts: acts(s) })
       } else if (s.running < s.desired) {
-        out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> is under-replicated`, sub: `${s.running}/${s.desired} running`, onclick: () => open(s) })
+        out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> is under-replicated`, pill: ['warn', `${s.running}/${s.desired}`], why: lastErr(s)?.error ?? `${s.desired - s.running} replica${s.desired - s.running === 1 ? '' : 's'} missing`, acts: acts(s) })
       }
     }
     for (const s of services) {
       const t = s.tasks.find((t) => t.state === 'running' && t.health === 'unhealthy')
-      if (t) out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> reports unhealthy`, sub: `replica ${esc(t.slot)}`, onclick: () => open(s) })
+      if (t) out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> reports unhealthy`, why: `replica ${t.slot} · ${t.message ?? ''}`, acts: acts(s) })
+    }
+    for (const g of app.errors?.newGroups ?? []) {
+      out.push({
+        sev: 'warn',
+        title: `<b>New error</b> in ${esc(g.service)}`,
+        pill: ['warn', `new · ${g.count}×`],
+        why: g.pattern || firstLine(g.sample),
+        acts: [{ label: 'Show', run: () => app.showGroup(g.fp) }],
+      })
     }
     if (err1) {
       out.push({
         sev: 'err',
         title: `<b>${err1}</b> ${err1 === 1 ? 'error' : 'errors'} in the last hour`,
-        sub: top ? `Most frequent: ${esc(top.pattern.slice(0, 110))} (${top.count}×)` : 'Open the logs to see them grouped',
-        onclick: () => {
-          app.logs.reset()
-          app.logs.setPreset('1h')
-          app.logs.levels.clear()
-          app.logs.levels.add('ERROR')
-          app.go('logs')
-        },
+        why: top ? `Most frequent: ${top.pattern.slice(0, 140)} (${top.count}×${top.services.length ? ', ' + top.services.join(', ') : ''})` : 'Open the logs to see them grouped',
+        acts: [{ label: 'Errors', run: errorsOnly }, ...(top ? [{ label: 'Top group', run: () => app.showGroup(top!.fp), ghost: true }] : [])],
       })
     }
-    for (const w of snap.warnings) out.push({ sev: 'warn', title: esc(w), sub: '', onclick: () => {} })
+    for (const w of snap.warnings) out.push({ sev: 'warn', title: esc(w), why: '', acts: [] })
     return out
   })
+
+  function errorsOnly() {
+    app.showLogs([], ['ERROR'])
+    app.logs.setPreset('1h')
+  }
 
   function esc(s: string) {
     return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
   }
-  function open(s: ServiceRef) {
-    app.drawer = { kind: 'service', key: s.key }
+  function openStack(name: string) {
+    app.stackQ = name
+    app.stackFilter = 'all'
+    app.go('stacks')
   }
   function stackErrors(name: string) {
     const st = snap.stacks.find((s) => s.name === name)
@@ -99,67 +135,65 @@
 
 <div class="kpis">
   {#if single}
-    <div class="panel kpi">
+    <button class="panel kpi" onclick={() => snap.nodes[0] && (app.drawer = { kind: 'node', id: snap.nodes[0].id })}>
       <span class="lbl">Host · {host.name}</span>
       <span class="val">{hostCpu === null ? '–' : hostCpu.toFixed(0) + '%'}<small> CPU</small></span>
       <span class="sub" title="CPU and memory used by containers">{bytes(host.memUsed)} memory · {host.ncpu} cores</span>
       <Ring value={hostCpu ?? 0} total={100} load />
-    </div>
+      <span class="go">Host details →</span>
+    </button>
   {:else}
-    <div class="panel kpi">
+    <button class="panel kpi" onclick={() => app.go('nodes')}>
       <span class="lbl">Nodes ready</span>
       <span class="val">{ready}<small>/{snap.nodes.length}</small></span>
       <span class="sub">{plural(managers.length, 'manager')} · quorum
         {#if managers.filter((m) => m.state === 'ready').length > managers.length / 2}<span class="pill ok">healthy</span>{:else}<span class="pill err">lost</span>{/if}</span>
       <Ring value={ready} total={snap.nodes.length} />
-    </div>
+      <span class="go">All nodes →</span>
+    </button>
   {/if}
-  <div class="panel kpi">
+  <button class="panel kpi" onclick={() => { app.stackQ = ''; app.stackFilter = healthy < services.length ? 'problems' : 'all'; app.go('stacks') }}>
     <span class="lbl">Services healthy</span>
     <span class="val">{healthy}<small>/{services.length}</small></span>
-    <span class="sub">across {plural(snap.stacks.length, 'stack')}</span>
+    <span class="sub">{#if healthy < services.length}{services.length - healthy} not healthy · {/if}across {plural(snap.stacks.length, 'stack')}</span>
     <Ring value={healthy} total={services.length} />
-  </div>
-  <div class="panel kpi">
+    <span class="go">{healthy < services.length ? 'Show problems →' : 'All services →'}</span>
+  </button>
+  <button class="panel kpi" onclick={() => { app.stackQ = ''; app.stackFilter = 'all'; app.go('stacks') }}>
     <span class="lbl">{snap.mode === 'swarm' ? 'Tasks running' : 'Containers running'}</span>
     <span class="val">{running}<small>/{tasks.length}</small></span>
     <span class="sub">{tasks.length - running} stopped, pending or failed</span>
     <Ring value={running} total={tasks.length} />
-  </div>
-  <div class="panel kpi" class:alert={err1 > 0}>
+    <span class="go">All services →</span>
+  </button>
+  <button class="panel kpi" class:alert={err1 > 0} onclick={errorsOnly}>
     <span class="lbl">Errors · last hour</span>
     <span class="val" style:color={err1 ? 'var(--err)' : 'inherit'}>{err1}</span>
     <span class="sub">{trend()}</span>
     <ErrSpark values={app.errors?.spark ?? []} />
-  </div>
+    <span class="go">Show errors →</span>
+  </button>
 </div>
 
-{#if app.pinnedServices.length}
-  <section class="panel">
-    <div class="ph"><h2><Icon name="star" size={15} fill class="star-ic" /> Pinned services</h2><span class="spacer"></span><a class="btn ghost" href="#stacks">All services</a></div>
-    <PinnedTable services={app.pinnedServices} />
-  </section>
-{/if}
-
-<div class="grid2">
+<div class="grid2" style="align-items:start">
   <section class="panel">
     <div class="ph"><h2>Needs attention</h2><span class="spacer"></span><span class="muted" style="font-size:12px">{plural(attn.length, 'item')}</span></div>
     <div class="attn">
       {#each attn as a, i (i)}
-        <button type="button" onclick={a.onclick}>
+        <div class="ai">
           <span class="sev {a.sev}"></span>
-          <span>{@html a.title}{#if a.sub}<br /><span class="muted" style="font-size:12.5px">{@html a.sub}</span>{/if}</span>
-          <Icon name="chev" size={12} class="chev" />
-        </button>
+          <span style="min-width:0">{@html a.title}{#if a.pill}<span class="pill {a.pill[0]}" style="margin-left:6px">{a.pill[1]}</span>{/if}{#if a.why}<span class="why" title={a.why}>{a.why}</span>{/if}</span>
+          <span class="acts2">{#each a.acts as x (x.label)}<button class="btn sm" class:ghost={x.ghost} onclick={x.run}>{x.label}</button>{/each}</span>
+        </div>
       {:else}
         <div class="empty">All nodes and services look healthy.</div>
       {/each}
     </div>
   </section>
   <section class="panel">
-    <div class="ph"><h2>Errors &amp; warnings · 6h</h2><span class="spacer"></span><a class="btn ghost" href="#logs">Open logs</a></div>
+    <div class="ph"><h2>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? '6h' : `since ${hhmm(win.from)}`}</h2><span class="spacer"></span><button class="btn ghost sm" onclick={() => app.showLogs([], ['ERROR', 'WARN'])}>Open in Logs</button></div>
     {#if hist}
-      <Histogram buckets={hist.result.histogram} from={windowEnd - 6 * 3600e3} to={windowEnd} levels={['WARN', 'ERROR']} />
+      <Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} onrange={(a, z) => { app.showLogs([], ['ERROR', 'WARN']); app.logs.zoom(a, z) }} />
     {:else}
       <div class="center-empty" style="padding:50px"><span class="spinner"></span></div>
     {/if}
@@ -168,6 +202,13 @@
     </div>
   </section>
 </div>
+
+{#if app.pinnedServices.length}
+  <section class="panel">
+    <div class="ph"><h2><Icon name="star" size={15} fill class="star-ic" /> Pinned services</h2><span class="spacer"></span><button class="btn ghost sm" onclick={() => { app.stackQ = ''; app.stackFilter = 'pinned'; app.go('stacks') }}>All pinned</button></div>
+    <ServiceTable services={app.pinnedServices} stackCol full={false} />
+  </section>
+{/if}
 
 {#if single}
   <section class="panel">
@@ -201,17 +242,17 @@
 {/if}
 
 <section class="panel">
-  <div class="ph"><h2>Stacks</h2><span class="spacer"></span><a class="btn ghost" href="#stacks">All stacks</a></div>
+  <div class="ph"><h2>Stacks</h2><span class="spacer"></span><a class="btn ghost sm" href="#stacks" onclick={() => { app.stackQ = ''; app.stackFilter = 'all' }}>All stacks</a></div>
   <div class="tw">
     <table>
-      <thead><tr><th>Stack</th><th>Services</th><th>Status</th><th class="hide-sm">Errors 1h</th><th class="hide-sm">Last update</th></tr></thead>
+      <thead><tr><th>Stack</th><th>Services</th><th>Status</th><th class="hide-sm">Errors 1h</th><th class="hide-sm">Last update</th><th class="actcell"><span class="sr">Actions</span></th></tr></thead>
       <tbody>
         {#each snap.stacks as st (st.name)}
           {@const live = st.services.filter((s) => s.desired > 0 || s.running > 0)}
           {@const bad = live.filter((s) => s.running < s.desired)}
           {@const e = stackErrors(st.name)}
           {@const upd = Math.max(0, ...st.services.map((s) => s.updatedAt ?? 0))}
-          <tr class="click" onclick={() => app.go('stacks')}>
+          <tr class="click" onclick={() => openStack(st.name)}>
             <td><b>{st.name}</b> <span class="kind">{st.kind}</span></td>
             <td>{st.services.length}</td>
             <td>
@@ -219,6 +260,7 @@
             </td>
             <td class="hide-sm mono" style:color={e ? 'var(--err)' : 'var(--muted)'}>{e}</td>
             <td class="hide-sm muted">{upd ? ago(upd, app.now) : '–'}</td>
+            <td class="actcell"><span class="acts"><button class="btn ghost sm" onclick={(ev) => { ev.stopPropagation(); app.showLogs([`stack:${st.name}`]) }}><Icon name="logs" size={14} />Logs</button></span></td>
           </tr>
         {/each}
       </tbody>

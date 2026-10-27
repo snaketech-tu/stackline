@@ -76,3 +76,36 @@ export function tidy(line: string): string {
   const m = PREFIX.exec(rest)
   return m && m[0].length < rest.length ? rest.slice(m[0].length) : rest || line
 }
+
+/** Splits text into plain and highlighted parts for the search terms (lower case). */
+export function marks(text: string, terms: string[]): { t: string; m: boolean }[] {
+  if (!terms.length) return [{ t: text, m: false }]
+  const lower = text.toLowerCase()
+  const out: { t: string; m: boolean }[] = []
+  let i = 0
+  while (i < text.length) {
+    let best = -1
+    let len = 0
+    for (const term of terms) {
+      const j = lower.indexOf(term, i)
+      if (j >= 0 && (best < 0 || j < best)) {
+        best = j
+        len = term.length
+      }
+    }
+    if (best < 0) break
+    if (best > i) out.push({ t: text.slice(i, best), m: false })
+    out.push({ t: text.slice(best, best + len), m: true })
+    i = best + len
+  }
+  if (i < text.length) out.push({ t: text.slice(i), m: false })
+  return out
+}
+
+/** Free-text words of a search, without `key:value` filters. */
+export function searchTerms(q: string): string[] {
+  return q
+    .split(/\s+/)
+    .filter((t) => t && !/^[a-z]+:/i.test(t))
+    .map((t) => t.toLowerCase())
+}

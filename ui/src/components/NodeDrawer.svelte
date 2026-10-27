@@ -3,6 +3,7 @@
   import { bytes, pct } from '../lib/format'
   import { memPct, nodeRole, taskPill } from '../lib/health'
   import Drawer from './Drawer.svelte'
+  import Icon from './Icon.svelte'
 
   let { id }: { id: string } = $props()
   let n = $derived(app.snap?.nodes.find((x) => x.id === id))
@@ -12,10 +13,8 @@
 
   function nodeLogs() {
     if (!n) return
-    app.logs.reset()
+    app.showLogs()
     app.logs.q = `node:${n.hostname}`
-    app.drawer = null
-    app.go('logs')
   }
 </script>
 
@@ -46,15 +45,15 @@
     </div>
     <div>
       <h4>{app.snap?.mode === 'swarm' ? 'Tasks' : 'Containers'} on this node ({tasks.length})</h4>
-      <div class="tw">
+      <div class="tw boxed">
         <table>
-          <thead><tr><th>Service</th><th>State</th></tr></thead>
+          <thead><tr><th>Service</th><th>State</th><th class="actcell"><span class="sr">Logs</span></th></tr></thead>
           <tbody>
             {#each tasks as { s, t } (t.id)}
               {@const [pc, label] = taskPill(t)}
-              <tr class="click" onclick={() => (app.drawer = { kind: 'service', key: s.key })}><td class="mono">{s.fullName}.{t.slot}</td><td><span class="pill {pc}">{label}</span></td></tr>
+              <tr class="click" onclick={() => app.openService(s.key)}><td class="mono">{s.fullName}.{t.slot}</td><td><span class="pill {pc}">{label}</span></td><td class="actcell"><span class="acts"><button class="ib" title="Logs of {s.fullName}" aria-label="Logs of {s.fullName}" onclick={(ev) => { ev.stopPropagation(); app.showLogs([s.fullName]) }}><Icon name="logs" size={14} /></button></span></td></tr>
             {:else}
-              <tr><td colspan="2" class="muted">Nothing scheduled here.</td></tr>
+              <tr><td colspan="3" class="muted">Nothing scheduled here.</td></tr>
             {/each}
           </tbody>
         </table>
