@@ -1,0 +1,19 @@
+# A swarm stack for testing swarm mode: `docker swarm init`, then
+# `docker stack deploy -c stack.yaml shop` from this folder.
+services:
+  api:
+    image: alpine:3.20
+    command: ["/bin/sh", "/logs.sh"]
+    environment: { KIND: logback, DELAY: "0.8" }
+    volumes: ["${PWD}/logs.sh:/logs.sh:ro"]
+    deploy: { replicas: 3 }
+  agent:
+    image: alpine:3.20
+    command: ["/bin/sh", "-c", "while true; do echo \"level=info msg=\\\"heartbeat\\\" node=$$HOSTNAME\"; sleep 5; done"]
+    deploy: { mode: global }
+  broken:
+    image: alpine:3.20
+    command: ["/bin/sh", "-c", "echo 'FATAL: cannot connect to kafka:9092' >&2; exit 1"]
+    deploy:
+      replicas: 1
+      restart_policy: { condition: on-failure, delay: 10s }

@@ -1,0 +1,20 @@
+[package]
+name = "swarmdash-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "swarmdash desktop app"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+swarmdash = { path = "../../crates/swarmdash" }
+swarmdash-core = { path = "../../crates/swarmdash-core" }
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = "2"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
