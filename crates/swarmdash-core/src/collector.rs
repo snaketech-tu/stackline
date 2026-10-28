@@ -1,7 +1,9 @@
 //! Reads logs per replica and stores them.
 //!
 //! Every poll asks Docker only for lines newer than the last one stored for
-//! that replica (`since=`), so after the first load the server does very little work.
+//! that replica (`since=`), and only among its newest lines (`tail=`): with
+//! `since` alone Docker reads the whole log file on every poll. So after the
+//! first load the server does very little work.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,6 +21,10 @@ use crate::model::LogSource;
 use crate::store::Store;
 
 const BATCH: usize = 2000;
+/// How many of the newest lines a poll asks for at first, and at most. A
+/// replica that wrote more since the last poll is asked again for more.
+const TAIL_MIN: usize = 1000;
+const TAIL_MAX: usize = 100_000;
 
 struct SourceState {
     src: LogSource,
@@ -27,6 +33,8 @@ struct SourceState {
     /// When a stopped container was last read; stopped containers are read once a minute.
     last_read: Option<Instant>,
     error: Option<String>,
+    /// The `tail` of the next poll; grows for replicas that write a lot.
+    tail: usize,
 }
 
 pub struct Collector {
@@ -50,7 +58,7 @@ impl Collector {
     /// Reads new lines from every source. `retention_us` bounds the first read of a new source.
     pub async fn poll(&mut self, client: &DockerClient, sources: Vec<LogSource>, retention_us: i64) -> PollReport {
         let now = chrono::Utc::now().timestamp_micros();
-        let keys: Vec<String> = sources.iter().map(|s| s.key.clone()).collect();
+        let keys: std::collections::HashSet<String> = sources.iter().map(|s| s.key.clone()).collect();
         self.states.retain(|k, _| keys.contains(k));
         for src in sources {
             let st = self.states.entry(src.key.clone()).or_insert_with(|| SourceState {
@@ -58,6 +66,7 @@ impl Collector {
                 cursor: None,
                 last_read: None,
                 error: None,
+                tail: TAIL_MIN,
                 src: src.clone(),
             });
             st.src = src;
@@ -121,9 +130,65 @@ async fn read_source(
     let since = format!("{}.{:06}000", since_us.div_euclid(1_000_000), since_us.rem_euclid(1_000_000));
     let kind = if st.src.via_task { "tasks" } else { "containers" };
     let path = format!("/{kind}/{}/logs?stdout=1&stderr=1&timestamps=1&since={since}", st.src.key);
-    let timeout = if st.cursor.is_none() { Duration::from_secs(600) } else { Duration::from_secs(60) };
+    if st.cursor.is_none() {
+        // The first read of a replica: everything within the retention.
+        return read_stream(client, store, conn, st, &path, Duration::from_secs(600), now).await;
+    }
+    // Docker reads the newest `tail` lines from the end of the file and keeps
+    // those after `since`. When they are (nearly) all new, more may have been
+    // written since the last poll, so ask again for more. Half, because one
+    // very long line can arrive as several parts that each count.
+    let mut tail = st.tail;
+    loop {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut body = client.get_stream(&format!("{path}&tail={tail}")).await?;
+        let mut decoder = LineDecoder::new(st.src.tty);
+        let mut lines = Vec::new();
+        loop {
+            let frame = match tokio::time::timeout_at(deadline.into(), body.frame()).await {
+                Ok(Some(f)) => f?,
+                Ok(None) | Err(_) => break,
+            };
+            if let Ok(data) = frame.into_data() {
+                decoder.push(&data, &mut lines);
+            }
+        }
+        decoder.finish(&mut lines);
+        if lines.len() < tail / 2 {
+            if lines.len() < tail / 8 {
+                st.tail = (tail / 2).max(TAIL_MIN);
+            }
+            let (mut entries, mut last_ts) = (Vec::new(), st.cursor);
+            consume(st, &mut lines, &mut entries, &mut last_ts);
+            if st.src.running {
+                st.assembler.flush_if_idle(now, &mut entries);
+            } else {
+                st.assembler.flush(&mut entries);
+            }
+            let n = flush(store, conn, &st.src, &mut entries, last_ts).await?;
+            st.cursor = last_ts;
+            return Ok(n);
+        }
+        if tail >= TAIL_MAX {
+            // A burst too big to ask for by count: read everything after the cursor.
+            return read_stream(client, store, conn, st, &path, Duration::from_secs(600), now).await;
+        }
+        tail = (tail * 8).min(TAIL_MAX);
+        st.tail = tail;
+    }
+}
 
-    let mut body = client.get_stream(&path).await?;
+/// Reads everything a log request returns, storing it in batches as it arrives.
+async fn read_stream(
+    client: &DockerClient,
+    store: &Arc<Store>,
+    conn: &str,
+    st: &mut SourceState,
+    path: &str,
+    timeout: Duration,
+    now: i64,
+) -> Result<usize> {
+    let mut body = client.get_stream(path).await?;
     let mut decoder = LineDecoder::new(st.src.tty);
     let mut lines = Vec::new();
     let mut entries: Vec<LogEntry> = Vec::new();
@@ -164,10 +229,12 @@ fn consume(
 ) {
     for (kind, line) in lines.drain(..) {
         let Some((ts, text)) = split_docker_timestamp(&line) else { continue };
-        if last_ts.is_some_and(|l| ts <= l) {
+        // Only lines already stored by an earlier read are skipped: lines of
+        // one read can share a microsecond (a stack trace written at once).
+        if st.cursor.is_some_and(|c| ts <= c) {
             continue;
         }
-        *last_ts = Some(ts);
+        *last_ts = (*last_ts).max(Some(ts));
         st.assembler.push(ts, kind, text, entries);
     }
 }

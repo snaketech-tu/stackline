@@ -15,12 +15,18 @@ use super::level::{self, Level};
 const MAX_GAP_US: i64 = 1_000_000;
 /// An exception head directly after a message line belongs to it if written within this time.
 const HEAD_GAP_US: i64 = 250_000;
+/// An entry ends at this many lines or bytes, even if more lines seem to
+/// belong to it: a service that keeps printing indented lines would
+/// otherwise grow one entry without end.
+const MAX_LINES: usize = 2000;
+const MAX_BYTES: usize = 512 * 1024;
 
 struct Pending {
     first_ts: i64,
     last_ts: i64,
     stream: StreamKind,
     lines: Vec<String>,
+    bytes: usize,
     has_stack: bool,
     python: bool,
 }
@@ -43,6 +49,8 @@ impl Assembler {
             return;
         }
         if let Some(p) = self.pending.as_mut()
+            && p.lines.len() < MAX_LINES
+            && p.bytes < MAX_BYTES
             && is_continuation(p, ts, stream, line)
         {
             if is_frame(line) || line.trim_start().starts_with("Traceback (most recent call last)") {
@@ -52,6 +60,7 @@ impl Assembler {
                 p.python = true;
             }
             if !(line.trim().is_empty() && !p.has_stack) {
+                p.bytes += line.len() + 1;
                 p.lines.push(line.to_string());
             }
             p.last_ts = ts;
@@ -62,7 +71,15 @@ impl Assembler {
             return;
         }
         let python = line.starts_with("Traceback (most recent call last)");
-        self.pending = Some(Pending { first_ts: ts, last_ts: ts, stream, lines: vec![line.to_string()], has_stack: python, python });
+        self.pending = Some(Pending {
+            first_ts: ts,
+            last_ts: ts,
+            stream,
+            lines: vec![line.to_string()],
+            bytes: line.len(),
+            has_stack: python,
+            python,
+        });
     }
 
     /// Emits the pending entry if nothing was added to it for a while.
@@ -270,5 +287,19 @@ mod tests {
         assert!(out[0].text.starts_with("Request failed\njava.lang.IllegalStateException"));
         assert_eq!(out[1].text, "GET / 200");
         assert!(out[1].raw.is_some());
+    }
+
+    #[test]
+    fn endless_indented_output_is_cut_into_entries() {
+        let mut a = Assembler::new("svc");
+        let mut out = vec![];
+        a.push(0, StreamKind::Stdout, "table:", &mut out);
+        for i in 1..5000 {
+            a.push(i, StreamKind::Stdout, &format!("    row {i}"), &mut out);
+        }
+        a.flush(&mut out);
+        assert_eq!(out.iter().map(|e| e.lines as usize).sum::<usize>(), 5000);
+        assert!(out.iter().all(|e| e.lines as usize <= MAX_LINES));
+        assert_eq!(out.len(), 3);
     }
 }

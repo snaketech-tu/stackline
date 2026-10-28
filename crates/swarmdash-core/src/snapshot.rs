@@ -17,12 +17,21 @@ const COMPOSE_ONEOFF: &str = "com.docker.compose.oneoff";
 const STACK_NAMESPACE: &str = "com.docker.stack.namespace";
 const SWARM_TASK: &str = "com.docker.swarm.task.id";
 
-pub struct Options {
-    /// Also read CPU and memory usage per running container (about one second per call).
+pub struct Options<'a> {
+    /// Also read CPU and memory usage per running container.
     pub stats: bool,
+    /// The CPU counters of each container at the last refresh, to compute
+    /// usage from. Updated by every fetch.
+    pub cpu: &'a std::sync::Mutex<CpuSamples>,
 }
 
-pub async fn fetch(client: &DockerClient, opts: &Options) -> Result<Snapshot> {
+/// Total CPU time of a container and of the whole host.
+pub type CpuSample = (u64, u64);
+pub type CpuSamples = HashMap<String, CpuSample>;
+/// CPU percent (unknown until there are two samples) and memory bytes.
+type Usage = (Option<f64>, u64);
+
+pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot> {
     let info: Value = client.get_json("/info").await?;
     let version: Value = client.get_json("/version").await.unwrap_or(Value::Null);
     let containers: Vec<Value> = client.get_json("/containers/json?all=1").await?;
@@ -102,7 +111,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options) -> Result<Snapshot> {
 
     let mut snap = Snapshot { mode, host, nodes, stacks, fetched_at: chrono::Utc::now().timestamp_millis(), warnings };
     if opts.stats {
-        add_stats(client, &mut snap, &containers).await;
+        add_stats(client, &mut snap, &containers, opts.cpu).await;
     }
     Ok(snap)
 }
@@ -360,22 +369,35 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
     }
 }
 
-async fn add_stats(client: &DockerClient, snap: &mut Snapshot, containers: &[Value]) {
+async fn add_stats(client: &DockerClient, snap: &mut Snapshot, containers: &[Value], samples: &std::sync::Mutex<CpuSamples>) {
     let running: Vec<String> = containers.iter().filter(|c| s(&c["State"]) == "running").map(|c| s(&c["Id"])).collect();
-    let results: Vec<(String, Option<(f64, u64)>)> = futures_util::stream::iter(running)
+    // `one-shot` answers at once with a single sample; without it Docker
+    // waits a second per container for a second sample. CPU usage then comes
+    // from the samples of the previous refresh. Engines before API 1.41
+    // ignore it and still send both samples.
+    let results: Vec<(String, Option<Value>)> = futures_util::stream::iter(running)
         .map(|id| async move {
-            let path = format!("/containers/{id}/stats?stream=false");
+            let path = format!("/containers/{id}/stats?stream=false&one-shot=true");
             let r = tokio::time::timeout(Duration::from_secs(6), client.get_json::<Value>(&path)).await;
-            let v = match r {
-                Ok(Ok(v)) => parse_stats(&v),
-                _ => None,
-            };
-            (id, v)
+            (id, r.ok().and_then(Result::ok))
         })
         .buffer_unordered(12)
         .collect()
         .await;
-    let stats: HashMap<String, (f64, u64)> = results.into_iter().filter_map(|(id, v)| v.map(|v| (id, v))).collect();
+    let stats: HashMap<String, Usage> = {
+        let mut prev = samples.lock().unwrap();
+        let mut next = CpuSamples::new();
+        let stats = results
+            .into_iter()
+            .filter_map(|(id, v)| {
+                let (usage, sample) = parse_stats(&v?, prev.get(&id).copied())?;
+                next.insert(id.clone(), sample);
+                Some((id, usage))
+            })
+            .collect();
+        *prev = next;
+        stats
+    };
     if stats.is_empty() {
         return;
     }
@@ -384,26 +406,30 @@ async fn add_stats(client: &DockerClient, snap: &mut Snapshot, containers: &[Val
     for st in &mut snap.stacks {
         for svc in &mut st.services {
             let (mut c, mut m, mut any) = (0.0, 0u64, false);
+            let mut known = true;
             for t in &mut svc.tasks {
                 if let Some((cpu, mem)) = t.container_id.as_ref().and_then(|id| stats.get(id)) {
-                    t.cpu_percent = Some(*cpu);
+                    t.cpu_percent = *cpu;
                     t.mem_used = Some(*mem);
-                    c += cpu;
+                    c += cpu.unwrap_or(0.0);
+                    known &= cpu.is_some();
                     m += mem;
                     any = true;
                 }
             }
             if any {
-                svc.cpu_percent = Some(c);
+                svc.cpu_percent = known.then_some(c);
                 svc.mem_used = Some(m);
             }
         }
     }
+    let mut known = true;
     for (cpu, mem) in stats.values() {
-        cpu_sum += cpu;
+        cpu_sum += cpu.unwrap_or(0.0);
+        known &= cpu.is_some();
         mem_sum += mem;
     }
-    snap.host.cpu_percent = Some((cpu_sum / ncpu).min(100.0));
+    snap.host.cpu_percent = known.then_some((cpu_sum / ncpu).min(100.0));
     snap.host.mem_used = Some(mem_sum);
     if let Some(n) = snap.nodes.iter_mut().find(|n| n.is_local) {
         n.cpu_percent = snap.host.cpu_percent;
@@ -411,21 +437,29 @@ async fn add_stats(client: &DockerClient, snap: &mut Snapshot, containers: &[Val
     }
 }
 
-/// CPU percent of one core-equivalent (100 = one full core) and memory bytes.
-fn parse_stats(v: &Value) -> Option<(f64, u64)> {
+/// CPU percent of one core-equivalent (100 = one full core) and memory bytes,
+/// plus this sample's CPU counters. CPU is unknown until there are two samples:
+/// the one Docker sent before this one, or `prev` from the last refresh.
+fn parse_stats(v: &Value, prev: Option<CpuSample>) -> Option<(Usage, CpuSample)> {
     let cpu = &v["cpu_stats"];
     let pre = &v["precpu_stats"];
-    let cpu_delta = u(&cpu["cpu_usage"]["total_usage"]) as f64 - u(&pre["cpu_usage"]["total_usage"]) as f64;
-    let sys_delta = u(&cpu["system_cpu_usage"]) as f64 - u(&pre["system_cpu_usage"]) as f64;
+    let sample = (u(&cpu["cpu_usage"]["total_usage"]), u(&cpu["system_cpu_usage"]));
+    let before = match u(&pre["system_cpu_usage"]) {
+        0 => prev,
+        sys => Some((u(&pre["cpu_usage"]["total_usage"]), sys)),
+    };
     let online = cpu["online_cpus"].as_u64().unwrap_or(1).max(1) as f64;
-    let pct = if cpu_delta > 0.0 && sys_delta > 0.0 { cpu_delta / sys_delta * online * 100.0 } else { 0.0 };
+    let pct = before.map(|(total, sys)| {
+        let (cpu_delta, sys_delta) = (sample.0 as f64 - total as f64, sample.1 as f64 - sys as f64);
+        if cpu_delta > 0.0 && sys_delta > 0.0 { cpu_delta / sys_delta * online * 100.0 } else { 0.0 }
+    });
     let mem = &v["memory_stats"];
     let usage = u(&mem["usage"]);
     let cache = mem["stats"]["inactive_file"].as_u64().or_else(|| mem["stats"]["cache"].as_u64()).unwrap_or(0);
     if usage == 0 && cpu.is_null() {
         return None;
     }
-    Some((pct, usage.saturating_sub(cache)))
+    Some(((pct, usage.saturating_sub(cache)), sample))
 }
 
 fn s(v: &Value) -> String {
@@ -501,5 +535,25 @@ mod tests {
         assert_eq!((migrate.desired, migrate.running), (0, 0));
         let scratch = &stacks[1].services[0];
         assert_eq!((scratch.image.as_str(), scratch.desired, scratch.tasks[0].exit_code), ("alpine", 1, Some(137)));
+    }
+
+    #[test]
+    fn cpu_from_one_shot_samples() {
+        let sample = |total: u64, sys: u64, pre: Option<(u64, u64)>| {
+            json!({
+                "cpu_stats": { "cpu_usage": { "total_usage": total }, "system_cpu_usage": sys, "online_cpus": 4 },
+                "precpu_stats": pre.map(|(t, s)| json!({ "cpu_usage": { "total_usage": t }, "system_cpu_usage": s })).unwrap_or(json!({})),
+                "memory_stats": { "usage": 3000, "stats": { "inactive_file": 1000 } },
+            })
+        };
+        // The first one-shot sample: memory, but no CPU yet.
+        let ((cpu, mem), next) = parse_stats(&sample(100, 1000, None), None).unwrap();
+        assert_eq!((cpu, mem, next), (None, 2000, (100, 1000)));
+        // The next refresh computes CPU from the previous sample.
+        let ((cpu, _), _) = parse_stats(&sample(150, 1200, None), Some(next)).unwrap();
+        assert_eq!(cpu, Some(50.0 / 200.0 * 4.0 * 100.0));
+        // Older engines send both samples themselves.
+        let ((cpu, _), _) = parse_stats(&sample(150, 1200, Some((140, 1100))), None).unwrap();
+        assert_eq!(cpu, Some(10.0 / 100.0 * 4.0 * 100.0));
     }
 }

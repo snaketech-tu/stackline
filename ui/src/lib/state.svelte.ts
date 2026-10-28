@@ -170,12 +170,13 @@ class AppState {
   meta = $state<Meta | null>(null)
   connections = $state<Connection[]>([])
   activeId = $state(load('swarmdash-conn') ?? 'local')
-  snap = $state<Snapshot | null>(null)
+  /** Replaced as a whole on every refresh, so it needs no deep reactivity. */
+  snap = $state.raw<Snapshot | null>(null)
   conn = $state<ConnState | null>(null)
   pins = $state<string[]>([])
   /** Which services of the active connection have their logs collected. */
   collect = $state<Collect>({ only: false, services: [] })
-  errors = $state<ErrorSummary | null>(null)
+  errors = $state.raw<ErrorSummary | null>(null)
   settings = $state<Settings | null>(null)
   update = $state<UpdateState | null>(null)
   view = $state<View>('overview')

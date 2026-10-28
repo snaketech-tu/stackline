@@ -18,16 +18,53 @@ use crate::logs::{Level, LogEntry};
 use crate::model::LogSource;
 
 pub struct Store {
+    /// The one connection that writes. Its lock is held only briefly, so new
+    /// lines are never stuck behind a slow read.
     db: Mutex<Connection>,
+    /// Idle read-only connections. Thanks to WAL, reads see a consistent
+    /// snapshot and run alongside writes and each other.
+    readers: Mutex<Vec<Connection>>,
     /// The database file, to count its write-ahead log too. None in memory.
     path: Option<std::path::PathBuf>,
+    /// Lines from this time on (µs) are all counted in `minutes`. Lines
+    /// stored before the table existed are not, so older ranges read them.
+    minutes_since: std::sync::atomic::AtomicI64,
+    /// The (conn, service, ts) index exists. It is built in the background
+    /// the first time, see [`Store::upgrade`].
+    service_index: std::sync::atomic::AtomicBool,
 }
 
-/// Keeps the search index in step with deleted lines. Deleting every line
-/// drops it for a moment, so the table can be emptied at once.
-const DELETE_TRIGGER: &str = "CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-    INSERT INTO entries_fts (entries_fts, rowid, text) VALUES ('delete', old.id, old.text);
+/// Idle read connections kept open; more are opened while busy.
+const IDLE_READERS: usize = 4;
+
+/// Keeps the search index in step with new lines. Their per-minute counts
+/// are added by [`Store::insert`], once per minute instead of once per line.
+const INSERT_TRIGGER: &str = "CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
+    INSERT INTO entries_fts (rowid, text) VALUES (new.id, new.text);
 END;";
+
+/// Adds to the counts of a minute: for the service, and for the whole connection (service '').
+const ADD_MINUTE: &str = "INSERT INTO minutes (conn, minute, service, stack, debug, info, warn, error, debug_exc, info_exc, warn_exc, error_exc)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+    ON CONFLICT (conn, minute, service) DO UPDATE SET
+        debug = debug + excluded.debug, info = info + excluded.info, warn = warn + excluded.warn, error = error + excluded.error,
+        debug_exc = debug_exc + excluded.debug_exc, info_exc = info_exc + excluded.info_exc,
+        warn_exc = warn_exc + excluded.warn_exc, error_exc = error_exc + excluded.error_exc";
+
+/// Keeps the search index and the per-minute counts in step with deleted
+/// lines. Deleting every line drops it for a moment, so the table can be
+/// emptied at once.
+const DELETE_TRIGGER: &str = "CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN
+    INSERT INTO entries_fts (entries_fts, rowid, text) VALUES ('delete', old.id, old.text);
+    UPDATE minutes SET
+        debug = debug - (old.level = 1), info = info - (old.level NOT IN (1, 3, 4)),
+        warn = warn - (old.level = 3), error = error - (old.level = 4),
+        debug_exc = debug_exc - (old.exc != 0 AND old.level = 1), info_exc = info_exc - (old.exc != 0 AND old.level NOT IN (1, 3, 4)),
+        warn_exc = warn_exc - (old.exc != 0 AND old.level = 3), error_exc = error_exc - (old.exc != 0 AND old.level = 4)
+    WHERE conn = old.conn AND minute = old.ts / 60000000 AND service IN (old.service, '');
+END;";
+
+const MINUTE: i64 = 60_000_000;
 
 const SCHEMA: &str = r#"
 PRAGMA auto_vacuum = INCREMENTAL;
@@ -58,9 +95,25 @@ DROP INDEX IF EXISTS entries_conn_ts;
 CREATE INDEX IF NOT EXISTS entries_conn_ts_fp ON entries (conn, ts, fp, level, exc, service, node, source) WHERE fp IS NOT NULL;
 CREATE INDEX IF NOT EXISTS entries_conn_fp ON entries (conn, fp, ts) WHERE fp IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5 (text, content = 'entries', content_rowid = 'id', tokenize = 'trigram');
-CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
-    INSERT INTO entries_fts (rowid, text) VALUES (new.id, new.text);
-END;
+-- Lines per minute, service and level, and per minute of the whole
+-- connection (service ''): the time graph and level counts of long ranges
+-- read these instead of every line.
+CREATE TABLE IF NOT EXISTS minutes (
+    conn TEXT NOT NULL,
+    minute INTEGER NOT NULL,
+    service TEXT NOT NULL,
+    stack TEXT NOT NULL,
+    debug INTEGER NOT NULL,
+    info INTEGER NOT NULL,
+    warn INTEGER NOT NULL,
+    error INTEGER NOT NULL,
+    debug_exc INTEGER NOT NULL,
+    info_exc INTEGER NOT NULL,
+    warn_exc INTEGER NOT NULL,
+    error_exc INTEGER NOT NULL,
+    PRIMARY KEY (conn, minute, service)
+) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS patterns (conn TEXT NOT NULL, fp TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (conn, fp));
 CREATE TABLE IF NOT EXISTS cursors (conn TEXT NOT NULL, source TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (conn, source));
 CREATE TABLE IF NOT EXISTS hosts (conn TEXT PRIMARY KEY, identity TEXT NOT NULL);
@@ -117,8 +170,13 @@ impl LogFilter {
     }
 
     fn where_clause(&self, conn: &str, with_levels: bool) -> (String, Vec<Sql>) {
-        let mut w = vec!["conn = ?".to_string(), "ts >= ?".to_string(), "ts < ?".to_string()];
-        let mut p: Vec<Sql> = vec![Sql::Text(conn.into()), Sql::Integer(self.from), Sql::Integer(self.to)];
+        self.where_clause_at(conn, with_levels, "ts", self.from, self.to)
+    }
+
+    /// The same filter on another time column: `minute` of the per-minute counts.
+    fn where_clause_at(&self, conn: &str, with_levels: bool, time: &str, from: i64, to: i64) -> (String, Vec<Sql>) {
+        let mut w = vec!["conn = ?".to_string(), format!("{time} >= ?"), format!("{time} < ?")];
+        let mut p: Vec<Sql> = vec![Sql::Text(conn.into()), Sql::Integer(from), Sql::Integer(to)];
         let any_of = |col: &str, vals: &[String], like: bool, w: &mut Vec<String>, p: &mut Vec<Sql>| {
             if vals.is_empty() {
                 return;
@@ -379,8 +437,79 @@ impl Store {
 
     fn init(db: Connection, path: Option<std::path::PathBuf>) -> Result<Store> {
         db.execute_batch(SCHEMA)?;
-        db.execute_batch(DELETE_TRIGGER)?;
-        Ok(Store { db: Mutex::new(db), path })
+        // The triggers and the start of the per-minute counts change together:
+        // every line stored after this is counted.
+        db.execute_batch(&format!(
+            "BEGIN IMMEDIATE;
+             DROP TRIGGER IF EXISTS entries_ai;
+             DROP TRIGGER IF EXISTS entries_ad;
+             {INSERT_TRIGGER}
+             {DELETE_TRIGGER}
+             COMMIT;"
+        ))?;
+        let since = match db.query_row("SELECT value FROM meta WHERE key = 'minutes_since'", [], |r| r.get(0)).optional()? {
+            Some(v) => v,
+            None => {
+                // Lines already stored are not counted: start after the newest.
+                let mut newest: Option<i64> = None;
+                for c in conns(&db)? {
+                    let t: Option<i64> = db.query_row("SELECT MAX(ts) FROM entries WHERE conn = ?1", params![c], |r| r.get(0))?;
+                    newest = newest.max(t);
+                }
+                let since = newest.map_or(0, |t| (t.div_euclid(MINUTE) + 1) * MINUTE);
+                db.execute("INSERT INTO meta (key, value) VALUES ('minutes_since', ?1)", params![since])?;
+                since
+            }
+        };
+        let service_index: bool = db.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'entries_conn_service_ts')",
+            [],
+            |r| r.get(0),
+        )?;
+        Ok(Store {
+            db: Mutex::new(db),
+            readers: Mutex::new(Vec::new()),
+            path,
+            minutes_since: since.into(),
+            service_index: service_index.into(),
+        })
+    }
+
+    /// Builds what older stores lack. On a large store this takes a while, so
+    /// it runs once in the background; queries work without it, only slower.
+    pub fn upgrade(&self) -> Result<()> {
+        if !self.service_index.load(std::sync::atomic::Ordering::Relaxed) {
+            let started = std::time::Instant::now();
+            self.db.lock().unwrap().execute_batch("CREATE INDEX IF NOT EXISTS entries_conn_service_ts ON entries (conn, service, ts);")?;
+            self.service_index.store(true, std::sync::atomic::Ordering::Relaxed);
+            tracing::info!("built the service index of the log store in {:.1} s", started.elapsed().as_secs_f64());
+        }
+        Ok(())
+    }
+
+    /// Runs a read on a read-only connection of its own. In memory there is
+    /// only the one connection.
+    fn read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        let Some(path) = &self.path else { return f(&self.db.lock().unwrap()) };
+        let idle = self.readers.lock().unwrap().pop();
+        let conn = match idle {
+            Some(c) => c,
+            None => {
+                let c = Connection::open_with_flags(
+                    path,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                )?;
+                // Waits out the moment a checkpoint resets the write-ahead log.
+                c.busy_timeout(std::time::Duration::from_secs(10))?;
+                c
+            }
+        };
+        let r = f(&conn);
+        let mut idle = self.readers.lock().unwrap();
+        if idle.len() < IDLE_READERS {
+            idle.push(conn);
+        }
+        r
     }
 
     pub fn insert(&self, conn: &str, src: &LogSource, entries: &[LogEntry]) -> Result<()> {
@@ -398,7 +527,13 @@ impl Store {
                 "INSERT INTO patterns (conn, fp, pattern) VALUES (?1, ?2, ?3)
                  ON CONFLICT (conn, fp) DO UPDATE SET pattern = excluded.pattern WHERE pattern != excluded.pattern",
             )?;
+            // Counts per minute: debug, info, warn, error, then the same with a stack trace.
+            let mut minutes: HashMap<i64, [i64; 8]> = HashMap::new();
             for e in entries {
+                let m = minutes.entry(e.ts.div_euclid(MINUTE)).or_default();
+                let l = e.level.as_i64() as usize - 1;
+                m[l] += 1;
+                m[4 + l] += e.exc as i64;
                 ins.execute(params![
                     conn,
                     e.ts,
@@ -417,6 +552,12 @@ impl Store {
                 ])?;
                 if let (Some(fp), Some(p)) = (&e.fp, &e.pattern) {
                     pat.execute(params![conn, fp, p])?;
+                }
+            }
+            let mut add = tx.prepare_cached(ADD_MINUTE)?;
+            for (minute, c) in minutes {
+                for (service, stack) in [(src.service.as_str(), src.stack.as_str()), ("", "")] {
+                    add.execute(params![conn, minute, service, stack, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])?;
                 }
             }
         }
@@ -440,212 +581,22 @@ impl Store {
     }
 
     pub fn query(&self, conn: &str, f: &LogFilter, buckets: usize, limit: usize) -> Result<QueryResult> {
-        let db = self.db.lock().unwrap();
-        let buckets = buckets.clamp(1, 500) as i64;
-        let span = (f.to - f.from).max(1);
-
-        // One pass over (ts, level, exc), read from the covering index, gives the level
-        // counts (which ignore the level filter, so the chips show what each would add)
-        // and the histogram. Bucketing here is about ten times faster than a GROUP BY,
-        // which makes SQLite sort every row of the range.
-        let (w_all, p_all) = f.where_clause(conn, false);
-        let wanted = |l: Level| !f.no_levels && (f.levels.is_empty() || f.levels.contains(&l));
-        let mut levels = LevelCounts::default();
-        let mut histogram = vec![Bucket::default(); buckets as usize];
-        let mut total = 0u64;
-        let mut st = db.prepare(&format!("SELECT ts, level, exc FROM entries WHERE {w_all}"))?;
-        let mut rows = st.query(params_from_iter(p_all.iter()))?;
-        while let Some(r) = rows.next()? {
-            let (ts, level, exc): (i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
-            let level = Level::from_i64(level);
-            *levels.get_mut(level) += 1;
-            if !wanted(level) {
-                continue;
-            }
-            let bk = &mut histogram[((ts - f.from) * buckets / span).clamp(0, buckets - 1) as usize];
-            total += 1;
-            bk.exc += (exc != 0) as u64;
-            *bk.get_mut(level) += 1;
-        }
-        drop(rows);
-        drop(st);
-
-        // Error groups, aggregated the same way. The partial index holds only lines with a fingerprint.
-        let (w, p) = f.where_clause(conn, true);
-        // The sparklines (24 buckets per group) come from the same pass.
-        struct Agg {
-            g: Group,
-            sources: std::collections::HashSet<String>,
-            max_id: i64,
-        }
-        let mut by_fp: HashMap<String, Agg> = HashMap::new();
-        let mut st = db.prepare(&format!(
-            "SELECT fp, level, ts, exc, service, node, source, id FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3"
-        ))?;
-        let mut rows = st.query(params_from_iter(p.iter()))?;
-        while let Some(r) = rows.next()? {
-            // Borrowed strings: most rows only bump counters of a group that exists already.
-            let fp = r.get_ref(0)?.as_str()?;
-            let (level, ts, exc, id): (i64, i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(7)?);
-            let level = Level::from_i64(level);
-            let a = match by_fp.get_mut(fp) {
-                Some(a) => a,
-                None => by_fp.entry(fp.to_string()).or_insert(Agg {
-                    g: Group {
-                        fp: fp.to_string(),
-                        pattern: String::new(),
-                        count: 0,
-                        level,
-                        first: ts,
-                        last: ts,
-                        services: vec![],
-                        nodes: vec![],
-                        sources: 0,
-                        exc: false,
-                        sample: String::new(),
-                        spark: vec![0; 24],
-                    },
-                    sources: Default::default(),
-                    max_id: id,
-                }),
-            };
-            let g = &mut a.g;
-            g.count += 1;
-            g.level = g.level.max(level);
-            g.first = g.first.min(ts);
-            g.last = g.last.max(ts);
-            g.exc |= exc != 0;
-            g.spark[((ts - f.from) * 24 / span).clamp(0, 23) as usize] += 1;
-            let service = r.get_ref(4)?.as_str()?;
-            if !g.services.iter().any(|x| x == service) {
-                g.services.push(service.to_string());
-            }
-            let node = r.get_ref(5)?.as_str()?;
-            if !g.nodes.iter().any(|x| x == node) {
-                g.nodes.push(node.to_string());
-            }
-            let source = r.get_ref(6)?.as_str()?;
-            if !a.sources.contains(source) {
-                a.sources.insert(source.to_string());
-            }
-            a.max_id = a.max_id.max(id);
-        }
-        drop(rows);
-        drop(st);
-        let mut groups: Vec<Group> = by_fp
-            .into_values()
-            .map(|mut a| {
-                a.g.sources = a.sources.len() as u64;
-                a.g.sample = a.max_id.to_string();
-                a.g
-            })
-            .collect();
-        groups.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)));
-        groups.truncate(50);
-        if !groups.is_empty() {
-            let mut pat = db.prepare_cached("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2")?;
-            let mut sample = db.prepare_cached("SELECT text FROM entries WHERE id = ?1")?;
-            for g in &mut groups {
-                g.pattern = pat.query_row(params![conn, g.fp], |r| r.get(0)).optional()?.unwrap_or_default();
-                let id: i64 = g.sample.parse().unwrap_or(0);
-                g.sample = sample.query_row(params![id], |r| r.get(0)).optional()?.unwrap_or_default();
-            }
-        }
-
-        let mut st = db.prepare(&format!(
-            "SELECT id, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw
-             FROM entries WHERE {w} ORDER BY ts DESC, id DESC LIMIT {}",
-            limit.clamp(1, 5000)
-        ))?;
-        let entries = st.query_map(params_from_iter(p.iter()), row_to_entry)?.collect::<rusqlite::Result<Vec<_>>>()?;
-
-        Ok(QueryResult { total, levels, histogram, groups, entries })
+        let since = self.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
+        let indexed = self.service_index.load(std::sync::atomic::Ordering::Relaxed);
+        self.read(|db| query(db, conn, f, buckets, limit, since, indexed))
     }
 
     pub fn error_summary(&self, conn: &str, now: i64) -> Result<ErrorSummary> {
-        const HOUR: i64 = 3_600_000_000;
-        let db = self.db.lock().unwrap();
-        let err = Level::Error.as_i64();
-        let mut by_service = HashMap::new();
-        let mut st = db.prepare_cached(
-            "SELECT service, COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 GROUP BY service",
-        )?;
-        let rows = st.query_map(params![conn, now - HOUR, now, err], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
-        for row in rows {
-            let (svc, n) = row?;
-            by_service.insert(svc, n);
-        }
-        let last_hour = by_service.values().sum();
-        let prev_hour: u64 = db.query_row(
-            "SELECT COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4",
-            params![conn, now - 2 * HOUR, now - HOUR, err],
-            |r| r.get(0),
-        )?;
-        let mut spark = vec![0u64; 24];
-        let from = now - 12 * HOUR;
-        let mut st = db.prepare_cached(
-            "SELECT (ts - ?2) * 24 / ?3 AS b, COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?4 AND level = ?5 GROUP BY b",
-        )?;
-        let rows = st.query_map(params![conn, from, 12 * HOUR, now, err], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u64>(1)?)))?;
-        for row in rows {
-            let (b, n) = row?;
-            spark[b.clamp(0, 23) as usize] += n;
-        }
-        let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
-        let new_groups = new_groups(&db, conn, now, oldest)?;
-        Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups })
+        self.read(|db| error_summary(db, conn, now))
     }
 
     /// Writes every matching entry, oldest first. Returns the number written.
     pub fn export(&self, conn: &str, f: &LogFilter, format: ExportFormat, out: &mut dyn Write) -> Result<u64> {
-        let db = self.db.lock().unwrap();
-        let (w, p) = f.where_clause(conn, true);
-        let mut st = db.prepare(&format!(
-            "SELECT id, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw
-             FROM entries WHERE {w} ORDER BY ts ASC, id ASC"
-        ))?;
-        let mut rows = st.query(params_from_iter(p.iter()))?;
-        let mut n = 0;
-        if format == ExportFormat::Csv {
-            writeln!(out, "time,level,stack,service,replica,node,stream,message")?;
-        }
-        while let Some(r) = rows.next()? {
-            let e = row_to_entry(r)?;
-            let time = chrono::DateTime::from_timestamp_micros(e.ts)
-                .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
-                .unwrap_or_default();
-            match format {
-                ExportFormat::Log => {
-                    writeln!(out, "{time} {:<5} {}.{} {}", e.level.name(), e.service, e.replica, e.text)?;
-                }
-                ExportFormat::Jsonl => {
-                    let v = serde_json::json!({
-                        "time": time, "level": e.level.name(), "stack": e.stack, "service": e.service,
-                        "replica": e.replica, "node": e.node, "stream": e.stream, "message": e.text,
-                        "raw": e.raw.as_deref().and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok()),
-                    });
-                    writeln!(out, "{v}")?;
-                }
-                ExportFormat::Csv => {
-                    writeln!(
-                        out,
-                        "{},{},{},{},{},{},{},{}",
-                        time,
-                        e.level.name(),
-                        csv(&e.stack),
-                        csv(&e.service),
-                        csv(&e.replica),
-                        csv(&e.node),
-                        e.stream,
-                        csv(&e.text)
-                    )?;
-                }
-            }
-            n += 1;
-        }
-        Ok(n)
+        self.read(|db| export(db, conn, f, format, out))
     }
+}
 
+impl Store {
     /// Deletes entries older than `before` (µs) and the oldest entries beyond
     /// `max_bytes`, then gives the space back to the system.
     pub fn retain(&self, before: i64, max_bytes: u64) -> Result<u64> {
@@ -666,6 +617,11 @@ impl Store {
                     break;
                 }
             }
+            // Counts of minutes with no lines left.
+            self.db
+                .lock()
+                .unwrap()
+                .execute("DELETE FROM minutes WHERE conn = ?1 AND minute < ?2", params![conn, before.div_euclid(MINUTE)])?;
         }
         // Over the size limit: drop the oldest lines first, down to 90% of the
         // limit so this does not run again a minute later. Ids grow with
@@ -705,7 +661,7 @@ impl Store {
         } else if deleted > 0 {
             db.execute_batch("PRAGMA incremental_vacuum;")?;
         }
-        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        checkpoint(&db)?;
         Ok(deleted)
     }
 
@@ -734,13 +690,8 @@ impl Store {
     }
 
     /// Lines and stored text per service of a connection, largest first.
-    /// It reads every line, so on a file store it uses its own read-only
-    /// connection: thanks to WAL it does not hold up new lines or queries.
     pub fn usage(&self, conn: &str) -> Result<Vec<ServiceUsage>> {
-        match &self.path {
-            Some(p) => usage(&Connection::open_with_flags(p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?, conn),
-            None => usage(&self.db.lock().unwrap(), conn),
-        }
+        self.read(|db| usage(db, conn))
     }
 
     /// Deletes the stored lines of one service, in batches.
@@ -748,7 +699,9 @@ impl Store {
         let deleted = self.delete_entries(Some(conn), Some(service))?;
         if deleted > 0 {
             self.merge_index()?;
-            self.db.lock().unwrap().execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
+            let db = self.db.lock().unwrap();
+            db.execute_batch("PRAGMA incremental_vacuum;")?;
+            checkpoint(&db)?;
         }
         Ok(deleted)
     }
@@ -774,9 +727,13 @@ impl Store {
                      INSERT INTO entries_fts (entries_fts) VALUES ('delete-all');
                      DROP TRIGGER entries_ad;
                      DELETE FROM entries;
+                     DELETE FROM minutes;
+                     UPDATE meta SET value = 0 WHERE key = 'minutes_since';
                      {DELETE_TRIGGER}
                      COMMIT;"
                 ))?;
+                // Nothing older is left, so every range can use the counts.
+                self.minutes_since.store(0, std::sync::atomic::Ordering::Relaxed);
                 return Ok(n);
             }
         }
@@ -815,36 +772,7 @@ impl Store {
 
     /// Counts the error entries of a connection in `[from, to)` (µs).
     pub fn error_rate(&self, conn: &str, from: i64, to: i64) -> Result<ErrorRate> {
-        let db = self.db.lock().unwrap();
-        let err = Level::Error.as_i64();
-        let count: u64 = db.query_row(
-            "SELECT COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4",
-            params![conn, from, to, err],
-            |r| r.get(0),
-        )?;
-        let mut rate = ErrorRate { count, ..Default::default() };
-        if count == 0 {
-            return Ok(rate);
-        }
-        let top: Option<(String, String, i64)> = db
-            .query_row(
-                "SELECT fp, service, MAX(id) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL
-                 GROUP BY fp ORDER BY COUNT(*) DESC LIMIT 1",
-                params![conn, from, to, err],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()?;
-        if let Some((fp, service, id)) = top {
-            let pattern: Option<String> =
-                db.query_row("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2", params![conn, fp], |r| r.get(0)).optional()?;
-            let text = match pattern.filter(|p| !p.is_empty()) {
-                Some(p) => p,
-                None => db.query_row("SELECT text FROM entries WHERE id = ?1", params![id], |r| r.get::<_, String>(0))?,
-            };
-            rate.top = Some(text.lines().next().unwrap_or("").chars().take(200).collect());
-            rate.top_service = Some(service);
-        }
-        Ok(rate)
+        self.read(|db| error_rate(db, conn, from, to))
     }
 
     /// Remembers which host or swarm a connection's logs come from. When a
@@ -870,14 +798,15 @@ impl Store {
     }
 
     pub fn stats(&self) -> Result<StoreStats> {
-        let db = self.db.lock().unwrap();
-        let entries = db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
-        let mut oldest: Option<i64> = None;
-        for c in conns(&db)? {
-            let t: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![c], |r| r.get(0))?;
-            oldest = oldest.into_iter().chain(t).min();
-        }
-        Ok(StoreStats { bytes: self.used_bytes(&db)?, entries, oldest })
+        self.read(|db| {
+            let entries = db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+            let mut oldest: Option<i64> = None;
+            for c in conns(db)? {
+                let t: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![c], |r| r.get(0))?;
+                oldest = oldest.into_iter().chain(t).min();
+            }
+            Ok(StoreStats { bytes: self.used_bytes(db)?, entries, oldest })
+        })
     }
 
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
@@ -888,15 +817,341 @@ impl Store {
         let db = self.db.lock().unwrap();
         match conn {
             Some(c) => {
+                db.execute("DELETE FROM minutes WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM patterns WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM cursors WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM hosts WHERE conn = ?1", params![c])?;
             }
-            None => db.execute_batch("DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
+            None => db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
         }
-        db.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
+        db.execute_batch("PRAGMA incremental_vacuum;")?;
+        checkpoint(&db)?;
         Ok(())
     }
+}
+
+fn query(
+    db: &Connection,
+    conn: &str,
+    f: &LogFilter,
+    buckets: usize,
+    limit: usize,
+    minutes_since: i64,
+    indexed: bool,
+) -> Result<QueryResult> {
+    let buckets = buckets.clamp(1, 500) as i64;
+    let span = (f.to - f.from).max(1);
+    // Picked stacks become their services, so the service index finds them.
+    let resolved;
+    let f = match indexed && !f.pick_stacks.is_empty() {
+        true => {
+            let mut g = f.clone();
+            let found = services_of_stacks(db, conn, &g.pick_stacks)?;
+            // With none found the stacks have no lines, and the filter stays as it is.
+            if !found.is_empty() {
+                g.exact_services.extend(found.into_iter().filter(|s| !f.exact_services.contains(s)));
+                g.pick_stacks.clear();
+            }
+            resolved = g;
+            &resolved
+        }
+        false => f,
+    };
+
+    // The level counts (which ignore the level filter, so the chips show what
+    // each would add) and the histogram. Whole minutes come from the
+    // per-minute counts when the filter only uses what they know; the rest is
+    // one pass over (ts, level, exc), read from a covering index. Bucketing
+    // here is about ten times faster than a GROUP BY, which makes SQLite sort
+    // every row of the range.
+    let wanted = |l: Level| !f.no_levels && (f.levels.is_empty() || f.levels.contains(&l));
+    let mut levels = LevelCounts::default();
+    let mut histogram = vec![Bucket::default(); buckets as usize];
+    let mut total = 0u64;
+    let mut count = |ts: i64, level: Level, n: u64, exc: u64| {
+        *levels.get_mut(level) += n;
+        if wanted(level) {
+            let bk = &mut histogram[((ts - f.from) * buckets / span).clamp(0, buckets - 1) as usize];
+            total += n;
+            bk.exc += exc;
+            *bk.get_mut(level) += n;
+        }
+    };
+    let countable = f.text.is_empty() && f.fps.is_empty() && f.nodes.is_empty() && f.replicas.is_empty() && f.sources.is_empty();
+    let lo = (f.from.div_euclid(MINUTE) + (f.from.rem_euclid(MINUTE) != 0) as i64).max(minutes_since.div_euclid(MINUTE));
+    let hi = f.to.div_euclid(MINUTE);
+    let mut raw = vec![(f.from, f.to)];
+    if countable && hi - lo >= 30 {
+        raw = vec![(f.from, f.from.max(lo * MINUTE)), (f.to.min(hi * MINUTE), f.to)];
+        let (mut w, p) = f.where_clause_at(conn, false, "minute", lo, hi);
+        // Without a service filter the rows of the whole connection are enough.
+        let whole = f.services.is_empty() && f.exact_services.is_empty() && f.pick_stacks.is_empty() && f.stacks.is_empty();
+        w.push_str(if whole { " AND service = ''" } else { " AND service != ''" });
+        let mut st = db.prepare_cached(&format!(
+            "SELECT minute, debug, info, warn, error, debug_exc, info_exc, warn_exc, error_exc FROM minutes WHERE {w}"
+        ))?;
+        let mut rows = st.query(params_from_iter(p.iter()))?;
+        while let Some(r) = rows.next()? {
+            let ts = r.get::<_, i64>(0)? * MINUTE;
+            for (i, l) in [Level::Debug, Level::Info, Level::Warn, Level::Error].into_iter().enumerate() {
+                let (n, x): (i64, i64) = (r.get(1 + i)?, r.get(5 + i)?);
+                if n > 0 {
+                    count(ts, l, n as u64, x.max(0) as u64);
+                }
+            }
+        }
+    }
+    for (from, to) in raw.into_iter().filter(|(a, b)| a < b) {
+        let (w, p) = f.where_clause_at(conn, false, "ts", from, to);
+        let mut st = db.prepare_cached(&format!("SELECT ts, level, exc FROM entries WHERE {w}"))?;
+        let mut rows = st.query(params_from_iter(p.iter()))?;
+        while let Some(r) = rows.next()? {
+            let (ts, level, exc): (i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
+            count(ts, Level::from_i64(level), 1, (exc != 0) as u64);
+        }
+    }
+
+    // Error groups, aggregated the same way. The partial index holds only lines with a fingerprint.
+    let (w, p) = f.where_clause(conn, true);
+    // The sparklines (24 buckets per group) come from the same pass.
+    struct Agg {
+        g: Group,
+        sources: std::collections::HashSet<String>,
+        max_id: i64,
+    }
+    let mut by_fp: HashMap<String, Agg> = HashMap::new();
+    let mut st = db.prepare(&format!(
+        "SELECT fp, level, ts, exc, service, node, source, id FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3"
+    ))?;
+    let mut rows = st.query(params_from_iter(p.iter()))?;
+    while let Some(r) = rows.next()? {
+        // Borrowed strings: most rows only bump counters of a group that exists already.
+        let fp = r.get_ref(0)?.as_str()?;
+        let (level, ts, exc, id): (i64, i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(7)?);
+        let level = Level::from_i64(level);
+        let a = match by_fp.get_mut(fp) {
+            Some(a) => a,
+            None => by_fp.entry(fp.to_string()).or_insert(Agg {
+                g: Group {
+                    fp: fp.to_string(),
+                    pattern: String::new(),
+                    count: 0,
+                    level,
+                    first: ts,
+                    last: ts,
+                    services: vec![],
+                    nodes: vec![],
+                    sources: 0,
+                    exc: false,
+                    sample: String::new(),
+                    spark: vec![0; 24],
+                },
+                sources: Default::default(),
+                max_id: id,
+            }),
+        };
+        let g = &mut a.g;
+        g.count += 1;
+        g.level = g.level.max(level);
+        g.first = g.first.min(ts);
+        g.last = g.last.max(ts);
+        g.exc |= exc != 0;
+        g.spark[((ts - f.from) * 24 / span).clamp(0, 23) as usize] += 1;
+        let service = r.get_ref(4)?.as_str()?;
+        if !g.services.iter().any(|x| x == service) {
+            g.services.push(service.to_string());
+        }
+        let node = r.get_ref(5)?.as_str()?;
+        if !g.nodes.iter().any(|x| x == node) {
+            g.nodes.push(node.to_string());
+        }
+        let source = r.get_ref(6)?.as_str()?;
+        if !a.sources.contains(source) {
+            a.sources.insert(source.to_string());
+        }
+        a.max_id = a.max_id.max(id);
+    }
+    drop(rows);
+    drop(st);
+    let mut groups: Vec<Group> = by_fp
+        .into_values()
+        .map(|mut a| {
+            a.g.sources = a.sources.len() as u64;
+            a.g.sample = a.max_id.to_string();
+            a.g
+        })
+        .collect();
+    groups.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)));
+    groups.truncate(50);
+    if !groups.is_empty() {
+        let mut pat = db.prepare_cached("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2")?;
+        let mut sample = db.prepare_cached("SELECT text FROM entries WHERE id = ?1")?;
+        for g in &mut groups {
+            g.pattern = pat.query_row(params![conn, g.fp], |r| r.get(0)).optional()?.unwrap_or_default();
+            let id: i64 = g.sample.parse().unwrap_or(0);
+            g.sample = sample.query_row(params![id], |r| r.get(0)).optional()?.unwrap_or_default();
+        }
+    }
+
+    // The newest lines. With picked services each one walks its own part of
+    // the service index, newest first, and the results are merged: a quiet
+    // service would otherwise mean reading the whole range.
+    let limit = limit.clamp(1, 5000);
+    let per_service = indexed && f.pick_stacks.is_empty() && (1..=50).contains(&f.exact_services.len());
+    let parts: Vec<(String, Vec<Sql>)> = if per_service {
+        f.exact_services.iter().map(|s| LogFilter { exact_services: vec![s.clone()], ..f.clone() }.where_clause(conn, true)).collect()
+    } else {
+        vec![(w, p)]
+    };
+    let mut entries = Vec::new();
+    for (w, p) in parts {
+        let mut st = db.prepare_cached(&format!(
+            "SELECT id, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw
+             FROM entries WHERE {w} ORDER BY ts DESC, id DESC LIMIT {limit}"
+        ))?;
+        entries.extend(st.query_map(params_from_iter(p.iter()), row_to_entry)?.collect::<rusqlite::Result<Vec<_>>>()?);
+    }
+    if per_service && f.exact_services.len() > 1 {
+        entries.sort_by(|a, b| b.ts.cmp(&a.ts).then(b.id.cmp(&a.id)));
+        entries.truncate(limit);
+    }
+
+    Ok(QueryResult { total, levels, histogram, groups, entries })
+}
+
+/// The services with stored lines in these stacks, found by skipping through
+/// the service index.
+fn services_of_stacks(db: &Connection, conn: &str, stacks: &[String]) -> Result<Vec<String>> {
+    let mut st = db.prepare_cached(
+        "WITH RECURSIVE s(service) AS (
+             SELECT MIN(service) FROM entries WHERE conn = ?1
+             UNION ALL SELECT (SELECT MIN(service) FROM entries WHERE conn = ?1 AND service > s.service) FROM s WHERE s.service IS NOT NULL
+         ) SELECT service, (SELECT stack FROM entries WHERE conn = ?1 AND service = s.service LIMIT 1) FROM s WHERE service IS NOT NULL",
+    )?;
+    let rows = st.query_map(params![conn], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (service, stack) = row?;
+        if stacks.contains(&stack) {
+            out.push(service);
+        }
+    }
+    Ok(out)
+}
+
+fn error_summary(db: &Connection, conn: &str, now: i64) -> Result<ErrorSummary> {
+    const HOUR: i64 = 3_600_000_000;
+    let err = Level::Error.as_i64();
+    let mut by_service = HashMap::new();
+    // Without the hint SQLite walks the service index of the whole store to skip a sort.
+    let mut st = db.prepare_cached(
+        "SELECT service, COUNT(*) FROM entries INDEXED BY entries_conn_ts_level
+         WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 GROUP BY service",
+    )?;
+    let rows = st.query_map(params![conn, now - HOUR, now, err], |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))?;
+    for row in rows {
+        let (svc, n) = row?;
+        by_service.insert(svc, n);
+    }
+    let last_hour = by_service.values().sum();
+    let prev_hour: u64 = db.query_row(
+        "SELECT COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4",
+        params![conn, now - 2 * HOUR, now - HOUR, err],
+        |r| r.get(0),
+    )?;
+    let mut spark = vec![0u64; 24];
+    let from = now - 12 * HOUR;
+    let mut st = db.prepare_cached(
+        "SELECT (ts - ?2) * 24 / ?3 AS b, COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?4 AND level = ?5 GROUP BY b",
+    )?;
+    let rows = st.query_map(params![conn, from, 12 * HOUR, now, err], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u64>(1)?)))?;
+    for row in rows {
+        let (b, n) = row?;
+        spark[b.clamp(0, 23) as usize] += n;
+    }
+    let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
+    let new_groups = new_groups(db, conn, now, oldest)?;
+    Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups })
+}
+
+fn export(db: &Connection, conn: &str, f: &LogFilter, format: ExportFormat, out: &mut dyn Write) -> Result<u64> {
+    let (w, p) = f.where_clause(conn, true);
+    let mut st = db.prepare(&format!(
+        "SELECT id, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw
+             FROM entries WHERE {w} ORDER BY ts ASC, id ASC"
+    ))?;
+    let mut rows = st.query(params_from_iter(p.iter()))?;
+    let mut n = 0;
+    if format == ExportFormat::Csv {
+        writeln!(out, "time,level,stack,service,replica,node,stream,message")?;
+    }
+    while let Some(r) = rows.next()? {
+        let e = row_to_entry(r)?;
+        let time = chrono::DateTime::from_timestamp_micros(e.ts)
+            .map(|d| d.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+            .unwrap_or_default();
+        match format {
+            ExportFormat::Log => {
+                writeln!(out, "{time} {:<5} {}.{} {}", e.level.name(), e.service, e.replica, e.text)?;
+            }
+            ExportFormat::Jsonl => {
+                let v = serde_json::json!({
+                    "time": time, "level": e.level.name(), "stack": e.stack, "service": e.service,
+                    "replica": e.replica, "node": e.node, "stream": e.stream, "message": e.text,
+                    "raw": e.raw.as_deref().and_then(|r| serde_json::from_str::<serde_json::Value>(r).ok()),
+                });
+                writeln!(out, "{v}")?;
+            }
+            ExportFormat::Csv => {
+                writeln!(
+                    out,
+                    "{},{},{},{},{},{},{},{}",
+                    time,
+                    e.level.name(),
+                    csv(&e.stack),
+                    csv(&e.service),
+                    csv(&e.replica),
+                    csv(&e.node),
+                    e.stream,
+                    csv(&e.text)
+                )?;
+            }
+        }
+        n += 1;
+    }
+    Ok(n)
+}
+
+fn error_rate(db: &Connection, conn: &str, from: i64, to: i64) -> Result<ErrorRate> {
+    let err = Level::Error.as_i64();
+    let count: u64 = db.query_row(
+        "SELECT COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4",
+        params![conn, from, to, err],
+        |r| r.get(0),
+    )?;
+    let mut rate = ErrorRate { count, ..Default::default() };
+    if count == 0 {
+        return Ok(rate);
+    }
+    let top: Option<(String, String, i64)> = db
+        .query_row(
+            "SELECT fp, service, MAX(id) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL
+                 GROUP BY fp ORDER BY COUNT(*) DESC LIMIT 1",
+            params![conn, from, to, err],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    if let Some((fp, service, id)) = top {
+        let pattern: Option<String> =
+            db.query_row("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2", params![conn, fp], |r| r.get(0)).optional()?;
+        let text = match pattern.filter(|p| !p.is_empty()) {
+            Some(p) => p,
+            None => db.query_row("SELECT text FROM entries WHERE id = ?1", params![id], |r| r.get::<_, String>(0))?,
+        };
+        rate.top = Some(text.lines().next().unwrap_or("").chars().take(200).collect());
+        rate.top_service = Some(service);
+    }
+    Ok(rate)
 }
 
 /// Lines and stored text per service of a connection, largest first.
@@ -920,6 +1175,16 @@ fn conns(db: &Connection) -> Result<Vec<String>> {
     )?;
     let rows = st.query_map([], |r| r.get(0))?;
     Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+}
+
+/// Moves the write-ahead log into the database and empties it. A read still
+/// running (an export, say) keeps part of the log in use: then it is left
+/// for the next time instead of waiting, which would hold up new lines.
+fn checkpoint(db: &Connection) -> Result<()> {
+    db.busy_timeout(std::time::Duration::ZERO)?;
+    let r = db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    db.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(r?)
 }
 
 /// Pages that hold data; free pages are given back by `incremental_vacuum`.
@@ -1237,5 +1502,171 @@ mod tests {
         let t = std::time::Instant::now();
         store.clear(None).unwrap();
         eprintln!("clear all: {:?}", t.elapsed());
+    }
+
+    /// The per-minute counts and the per-service reads give the same answers
+    /// as reading every line, also after lines were deleted.
+    #[test]
+    fn minute_counts_and_service_reads_match_full_reads() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-minutes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = Store::open(&dir.join("logs.db")).unwrap();
+        store.upgrade().unwrap();
+        let base = 1_700_000_000_000_000i64 / MINUTE * MINUTE;
+        let kinds = ["INFO ok", "WARN slow call", "ERROR Upstream timed out after 5000ms", "DEBUG tick"];
+        for svc in 0..6 {
+            let mut s = src(&format!("svc{svc}"), "1");
+            s.stack = format!("st{}", svc % 3);
+            let lines: Vec<(i64, String)> = (0..3000i64)
+                .map(|i| (base + ((i * 7919 + svc * 31) % 14_400) * 1_000_000 + i, format!("{} {i}", kinds[((i + svc) % 4) as usize])))
+                .collect();
+            let mut lines = lines;
+            lines.sort();
+            let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            store.insert("c1", &s, &entries(&refs)).unwrap();
+        }
+        let check = |label: &str| {
+            let db = store.db.lock().unwrap();
+            let filters = [
+                LogFilter { from: base + 17 * MINUTE + 1234, to: base + 230 * MINUTE - 99, ..Default::default() },
+                LogFilter { from: base, to: base + 240 * MINUTE, levels: vec![Level::Error], ..Default::default() },
+                LogFilter { from: base, to: base + 240 * MINUTE, exact_services: vec!["svc1".into(), "svc4".into()], ..Default::default() },
+                LogFilter { from: base + 3, to: base + 200 * MINUTE, pick_stacks: vec!["st2".into()], ..Default::default() },
+                LogFilter {
+                    from: base,
+                    to: base + 240 * MINUTE,
+                    pick_stacks: vec!["st0".into()],
+                    exact_services: vec!["svc1".into()],
+                    levels: vec![Level::Warn, Level::Error],
+                    ..Default::default()
+                },
+                LogFilter { from: base, to: base + 240 * MINUTE, services: vec!["vc5".into()], ..Default::default() },
+            ];
+            for f in &filters {
+                // 48 buckets of 5 minutes: bucket edges fall on whole minutes.
+                let fast = query(&db, "c1", f, 48, 300, 0, true).unwrap();
+                let slow = query(&db, "c1", f, 48, 300, i64::MAX, false).unwrap();
+                assert_eq!(fast.total, slow.total, "{label}: {f:?}");
+                assert_eq!(serde_json::to_value(&fast.levels).unwrap(), serde_json::to_value(&slow.levels).unwrap(), "{label}: {f:?}");
+                if f.from % MINUTE == 0 {
+                    assert_eq!(
+                        serde_json::to_value(&fast.histogram).unwrap(),
+                        serde_json::to_value(&slow.histogram).unwrap(),
+                        "{label}: {f:?}"
+                    );
+                }
+                let ids = |r: &QueryResult| r.entries.iter().map(|e| e.id).collect::<Vec<_>>();
+                assert_eq!(ids(&fast), ids(&slow), "{label}: {f:?}");
+                assert!(fast.total > 0, "{label}: {f:?}");
+            }
+        };
+        check("after insert");
+        store.retain(base + 60 * MINUTE + 5, u64::MAX).unwrap();
+        check("after age retention");
+        store.clear_service("c1", "svc2").unwrap();
+        check("after deleting a service");
+        let live = live_bytes(&store.db.lock().unwrap()).unwrap();
+        store.retain(0, live / 10 * 8).unwrap();
+        check("after trimming to size");
+        store.clear(None).unwrap();
+        let db = store.db.lock().unwrap();
+        let left: i64 = db.query_row("SELECT COUNT(*) FROM minutes", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+        drop(db);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A store from before the per-minute counts: its lines are read one by
+    /// one, newer lines are counted, and both together give the right answer.
+    #[test]
+    fn store_from_before_minute_counts() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-upgrade-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("logs.db");
+        let base = 1_700_000_000_000_000i64 / MINUTE * MINUTE;
+        let lines = |from: i64, n: i64| -> Vec<(i64, String)> {
+            (0..n).map(|i| (base + (from + i) * 7_000_000, format!("{} line {i}", ["INFO", "WARN", "ERROR"][(i % 3) as usize]))).collect()
+        };
+        {
+            let store = Store::open(&path).unwrap();
+            let old = lines(0, 1000);
+            let refs: Vec<(i64, &str)> = old.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            store.insert("c1", &src("svc", "1"), &entries(&refs)).unwrap();
+            // What 0.3 stores look like: no counts, no triggers for them.
+            store
+                .db
+                .lock()
+                .unwrap()
+                .execute_batch(
+                    "DROP TRIGGER entries_ai; DROP TRIGGER entries_ad; DROP TABLE minutes; DROP TABLE meta;
+                     CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN INSERT INTO entries_fts (rowid, text) VALUES (new.id, new.text); END;
+                     CREATE TRIGGER entries_ad AFTER DELETE ON entries BEGIN INSERT INTO entries_fts (entries_fts, rowid, text) VALUES ('delete', old.id, old.text); END;",
+                )
+                .unwrap();
+        }
+        let store = Store::open(&path).unwrap();
+        store.upgrade().unwrap();
+        let since = store.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(since > base + 999 * 7_000_000, "counts start after the newest stored line");
+        let new = lines(1000, 1000);
+        let refs: Vec<(i64, &str)> = new.iter().map(|(t, l)| (*t, l.as_str())).collect();
+        store.insert("c1", &src("svc", "1"), &entries(&refs)).unwrap();
+        // 48 buckets of 5 minutes, so the counted minutes fall into the same buckets.
+        let f = LogFilter { from: base, to: base + 240 * MINUTE, ..Default::default() };
+        let r = store.query("c1", &f, 48, 10).unwrap();
+        assert_eq!(r.total, 2000);
+        assert_eq!((r.levels.info, r.levels.warn, r.levels.error), (668, 666, 666));
+        let slow = query(&store.db.lock().unwrap(), "c1", &f, 48, 10, i64::MAX, false).unwrap();
+        assert_eq!(serde_json::to_value(&r.histogram).unwrap(), serde_json::to_value(&slow.histogram).unwrap());
+        // Reopening keeps where the counts start.
+        drop(store);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.minutes_since.load(std::sync::atomic::Ordering::Relaxed), since);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A long read (an export) neither blocks new lines nor the cleanup.
+    #[test]
+    fn long_reads_do_not_hold_up_writes() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-reads-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = std::sync::Arc::new(Store::open(&dir.join("logs.db")).unwrap());
+        let base = 1_700_000_000_000_000i64;
+        let lines: Vec<(i64, String)> = (0..5000).map(|i| (base + i * 1000, format!("INFO line {i}"))).collect();
+        let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+        store.insert("c1", &src("svc", "1"), &entries(&refs)).unwrap();
+
+        // An export to a slow reader: it stays inside its read for over a second.
+        struct Slow(usize);
+        impl Write for Slow {
+            fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+                self.0 += 1;
+                if self.0.is_multiple_of(3000) {
+                    std::thread::sleep(std::time::Duration::from_millis(250));
+                }
+                Ok(b.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let reader = {
+            let store = store.clone();
+            std::thread::spawn(move || {
+                let f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+                store.export("c1", &f, ExportFormat::Log, &mut Slow(0)).unwrap()
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let t = std::time::Instant::now();
+        store.insert("c1", &src("svc", "1"), &entries(&[(base + 10_000_000, "INFO new")])).unwrap();
+        store.retain(base + 1000, u64::MAX).unwrap();
+        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
+        assert!(!reader.is_finished(), "the export was still running");
+        assert_eq!(reader.join().unwrap(), 5000);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -14,7 +14,8 @@
   const COL: Record<Level, string> = { ERROR: 'var(--err)', WARN: 'var(--warn)', INFO: 'var(--info)', DEBUG: 'var(--dbg)' }
   const RANGES: Preset[] = ['auto', ...(Object.keys(PRESETS) as Preset[])]
 
-  let res = $state<LogResponse | null>(null)
+  // Replaced as a whole on every load, so it needs no deep reactivity.
+  let res = $state.raw<LogResponse | null>(null)
   let shown = $state({ from: 0, to: 0 })
   let loading = $state(false)
   let error = $state<string | null>(null)
@@ -34,6 +35,9 @@
     try {
       const r = await api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...p, buckets: 60, limit: L.limit })}`)
       if (mine !== seq) return
+      // Lines already shown keep their objects, so their rows are not redrawn.
+      const known = new Map(res?.result.entries.map((e) => [e.id, e]))
+      r.result.entries = r.result.entries.map((e) => known.get(e.id) ?? e)
       res = r
       shown = { from: +p.from, to: +p.to }
       error = null
@@ -87,6 +91,8 @@
   let terms = $derived(searchTerms(L.q))
 
   type Row = { e: Entry; n: number }
+  /** The rows of the last result, to hand unchanged rows back as the same objects. */
+  let shownRows = new Map<number, Row>()
   let rows = $derived.by(() => {
     const out: Row[] = []
     let last: Row | null = null
@@ -98,7 +104,15 @@
       last = { e, n: 1 }
       out.push(last)
     }
-    return out
+    const next = new Map<number, Row>()
+    const stable = out.map((r) => {
+      const old = shownRows.get(r.e.id)
+      const keep = old && old.e === r.e && old.n === r.n ? old : r
+      next.set(r.e.id, keep)
+      return keep
+    })
+    shownRows = next
+    return stable
   })
 
   let groups = $derived(res?.result.groups ?? [])

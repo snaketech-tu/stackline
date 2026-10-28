@@ -338,19 +338,22 @@ async fn export(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> R
         .map_err(|e| anyhow::anyhow!(e))??;
         return Ok(Json(json!({ "path": path.display().to_string(), "entries": n })).into_response());
     }
-    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<u8>> {
-        let mut buf = Vec::new();
-        store.export(&id, &f, format, &mut buf)?;
-        Ok(buf)
-    })
-    .await
-    .map_err(|e| anyhow::anyhow!(e))??;
+    // Streamed while it is read: a week of logs can be gigabytes, which must
+    // not sit in memory. If the download is cancelled, writing fails and the
+    // export stops.
+    let (rx, tx) = tokio::io::duplex(256 * 1024);
+    tokio::task::spawn_blocking(move || {
+        let mut out = std::io::BufWriter::with_capacity(64 * 1024, tokio_util::io::SyncIoBridge::new(tx));
+        if let Err(e) = store.export(&id, &f, format, &mut out).and_then(|_| Ok(std::io::Write::flush(&mut out)?)) {
+            tracing::debug!("export stopped: {e:#}");
+        }
+    });
     Ok((
         [
             (header::CONTENT_TYPE, format!("{mime}; charset=utf-8")),
             (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{name}\"")),
         ],
-        bytes,
+        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(rx)),
     )
         .into_response())
 }
