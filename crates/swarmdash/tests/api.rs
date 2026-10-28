@@ -30,8 +30,11 @@ impl Drop for App {
 }
 
 fn app() -> App {
+    // A counter, because tests run in parallel and macOS clocks tick in microseconds.
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("swarmdash-api-test-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("swarmdash-api-test-{}-{nanos}-{n}", std::process::id()));
     let manager = Manager::new(Paths::in_dir(&dir)).unwrap();
     let state =
         Arc::new(AppState { manager, token: TOKEN.into(), desktop: false, allowed_hosts: vec![HOST.into()], updater: Updater::new(None) });
