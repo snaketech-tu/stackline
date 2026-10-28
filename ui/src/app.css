@@ -544,6 +544,9 @@ tr.editrow>td{background:var(--panel-2);padding:16px 18px}
 .usage{display:flex;flex-direction:column;gap:8px;padding:12px 16px 14px;border-top:1px solid var(--line)}
 .usage .uh{display:flex;flex-direction:column;gap:2px;font-size:13px}
 .usage .uh .muted{font-size:12px}
+.maint{display:flex;gap:8px;align-items:flex-start;margin:0 16px 12px;padding:9px 12px;border:1px solid var(--err);border-radius:8px;color:var(--err);font-size:12.5px;line-height:1.45}
+.maint span{color:var(--fg)}
+.maint b{color:var(--err)}
 .usage table{width:100%;border-collapse:collapse;font-size:13px}
 .usage th{text-align:left;font-weight:600;color:var(--muted);font-size:12px;padding:4px 6px}
 .usage td{padding:5px 6px;border-top:1px solid var(--line);vertical-align:middle}
@@ -556,3 +559,4 @@ tr.editrow>td{background:var(--panel-2);padding:16px 18px}
 .callout.info .h{color:var(--fg)}
 .usage .deleting{display:inline-flex;gap:6px;align-items:center;font-size:12.5px}
 .spinner.sm{width:12px;height:12px;border-width:2px}
+.stopped{font-size:12px;margin-left:8px;white-space:nowrap}

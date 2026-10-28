@@ -23,7 +23,12 @@ pub struct Options<'a> {
     /// The CPU counters of each container at the last refresh, to compute
     /// usage from. Updated by every fetch.
     pub cpu: &'a std::sync::Mutex<CpuSamples>,
+    /// Whether a container that exited with 137 was killed for running out
+    /// of memory, by container id, so each one is inspected once.
+    pub oom: &'a std::sync::Mutex<OomKills>,
 }
+
+pub type OomKills = HashMap<String, bool>;
 
 /// Total CPU time of a container and of the whole host.
 pub type CpuSample = (u64, u64);
@@ -34,7 +39,8 @@ type Usage = (Option<f64>, u64);
 pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot> {
     let info: Value = client.get_json("/info").await?;
     let version: Value = client.get_json("/version").await.unwrap_or(Value::Null);
-    let containers: Vec<Value> = client.get_json("/containers/json?all=1").await?;
+    let mut containers: Vec<Value> = client.get_json("/containers/json?all=1").await?;
+    mark_oom_kills(client, &mut containers, opts.oom).await;
 
     let mut warnings = Vec::new();
     let swarm_state = s(&info["Swarm"]["LocalNodeState"]);
@@ -317,16 +323,17 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
             let status = s(&c["Status"]);
             let state = s(&c["State"]);
             let exit_code = exit_code_of(&status);
+            let oom = c["OOMKilled"].as_bool() == Some(true);
             Task {
                 id: s(&c["Id"]),
                 slot: c["Labels"][COMPOSE_NUMBER].as_str().map(str::to_string).unwrap_or_else(|| "1".into()),
                 node: host.to_string(),
                 state: state.clone(),
-                desired_state: if expected_to_run(&state, exit_code) { "running".into() } else { state.clone() },
+                desired_state: if oom || expected_to_run(&state, exit_code) { "running".into() } else { state.clone() },
                 health: health_of(&status),
                 exit_code,
                 message: Some(status),
-                error: None,
+                error: oom.then(|| "Out of memory: the kernel stopped it at its memory limit".to_string()),
                 container_id: Some(s(&c["Id"])),
                 container_name: Some(container_name(c)),
                 since: c["Created"].as_i64().map(|t| t * 1000),
@@ -369,35 +376,75 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
     }
 }
 
+/// Exit code 137 is SIGKILL: `docker stop` after its timeout, or the kernel
+/// when the container ran out of memory. Only the container's details tell
+/// them apart, so those containers are inspected, each one once.
+async fn mark_oom_kills(client: &DockerClient, containers: &mut [Value], known: &std::sync::Mutex<OomKills>) {
+    let killed: Vec<String> = containers
+        .iter()
+        .filter(|c| s(&c["State"]) == "exited" && exit_code_of(&s(&c["Status"])) == Some(137))
+        .map(|c| s(&c["Id"]))
+        .collect();
+    let unknown: Vec<String> = {
+        let mut k = known.lock().unwrap();
+        k.retain(|id, _| killed.contains(id));
+        killed.iter().filter(|id| !k.contains_key(*id)).cloned().collect()
+    };
+    let found: Vec<(String, bool)> = futures_util::stream::iter(unknown)
+        .map(|id| async move {
+            let v = client.get_json::<Value>(&format!("/containers/{id}/json")).await;
+            (id, v.ok().map(|v| v["State"]["OOMKilled"].as_bool().unwrap_or(false)))
+        })
+        .buffer_unordered(6)
+        .filter_map(|(id, oom)| async move { oom.map(|o| (id, o)) })
+        .collect()
+        .await;
+    let mut k = known.lock().unwrap();
+    k.extend(found);
+    for c in containers.iter_mut() {
+        if k.get(&s(&c["Id"])) == Some(&true) {
+            c["OOMKilled"] = Value::Bool(true);
+        }
+    }
+}
+
 async fn add_stats(client: &DockerClient, snap: &mut Snapshot, containers: &[Value], samples: &std::sync::Mutex<CpuSamples>) {
     let running: Vec<String> = containers.iter().filter(|c| s(&c["State"]) == "running").map(|c| s(&c["Id"])).collect();
     // `one-shot` answers at once with a single sample; without it Docker
     // waits a second per container for a second sample. CPU usage then comes
     // from the samples of the previous refresh. Engines before API 1.41
     // ignore it and still send both samples.
-    let results: Vec<(String, Option<Value>)> = futures_util::stream::iter(running)
-        .map(|id| async move {
-            let path = format!("/containers/{id}/stats?stream=false&one-shot=true");
-            let r = tokio::time::timeout(Duration::from_secs(6), client.get_json::<Value>(&path)).await;
-            (id, r.ok().and_then(Result::ok))
-        })
-        .buffer_unordered(12)
-        .collect()
-        .await;
-    let stats: HashMap<String, Usage> = {
-        let mut prev = samples.lock().unwrap();
-        let mut next = CpuSamples::new();
-        let stats = results
-            .into_iter()
-            .filter_map(|(id, v)| {
-                let (usage, sample) = parse_stats(&v?, prev.get(&id).copied())?;
-                next.insert(id.clone(), sample);
-                Some((id, usage))
+    let read = |ids: Vec<String>| {
+        futures_util::stream::iter(ids)
+            .map(|id| async move {
+                let path = format!("/containers/{id}/stats?stream=false&one-shot=true");
+                let r = tokio::time::timeout(Duration::from_secs(6), client.get_json::<Value>(&path)).await;
+                (id, r.ok().and_then(Result::ok))
             })
-            .collect();
-        *prev = next;
-        stats
+            .buffer_unordered(12)
+            .collect::<Vec<(String, Option<Value>)>>()
     };
+    let parse = |results: Vec<(String, Option<Value>)>, prev: &CpuSamples, next: &mut CpuSamples, stats: &mut HashMap<String, Usage>| {
+        for (id, v) in results {
+            if let Some((usage, sample)) = v.and_then(|v| parse_stats(&v, prev.get(&id).copied())) {
+                next.insert(id.clone(), sample);
+                stats.insert(id, usage);
+            }
+        }
+    };
+    let prev = samples.lock().unwrap().clone();
+    let (mut next, mut stats) = (CpuSamples::new(), HashMap::new());
+    parse(read(running).await, &prev, &mut next, &mut stats);
+    // Containers seen for the first time (all of them on the first refresh)
+    // have no earlier sample: read them once more a moment later, so CPU
+    // shows at once instead of after the next refresh.
+    let new: Vec<String> = stats.iter().filter(|(_, (cpu, _))| cpu.is_none()).map(|(id, _)| id.clone()).collect();
+    if !new.is_empty() {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let first = next.clone();
+        parse(read(new).await, &first, &mut next, &mut stats);
+    }
+    *samples.lock().unwrap() = next;
     if stats.is_empty() {
         return;
     }
@@ -539,6 +586,8 @@ mod tests {
             json!({"Id":"x1","Names":["/scratch"],"Image":"alpine@sha256:abc","State":"exited","Status":"Exited (1) 1 day ago","Created":1700000000,"Labels":{}}),
             json!({"Id":"w1","Names":["/shop-worker-1"],"Image":"shop:1","State":"exited","Status":"Exited (143) 5 minutes ago","Created":1700000000,
                    "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"worker"}}),
+            json!({"Id":"o1","Names":["/shop-cache-1"],"Image":"shop:1","State":"exited","Status":"Exited (137) 1 minute ago","Created":1700000000,"OOMKilled":true,
+                   "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"cache"}}),
             json!({"Id":"c1","Names":["/shop-cron-1"],"Image":"shop:1","State":"created","Status":"Created","Created":1700000000,
                    "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"cron"}}),
         ];
@@ -554,6 +603,9 @@ mod tests {
             assert_eq!((by(n).desired, by(n).running), (0, 0), "{n}");
         }
         assert_eq!(by("worker").tasks[0].exit_code, Some(143));
+        // Killed for running out of memory: down, and it says why.
+        assert_eq!((by("cache").desired, by("cache").running), (1, 0));
+        assert!(by("cache").tasks[0].error.as_deref().is_some_and(|e| e.contains("Out of memory")));
         // A crash still does.
         let scratch = &stacks[1].services[0];
         assert_eq!((scratch.image.as_str(), scratch.desired, scratch.tasks[0].exit_code), ("alpine", 1, Some(1)));

@@ -47,6 +47,8 @@ pub struct Runtime {
     tasks: Mutex<Vec<JoinHandle<()>>>,
     /// CPU counters per container from the last refresh.
     cpu: Mutex<snapshot::CpuSamples>,
+    /// Which stopped containers ran out of memory, so each is inspected once.
+    oom: Mutex<snapshot::OomKills>,
 }
 
 impl Runtime {
@@ -66,6 +68,7 @@ impl Runtime {
             client: tokio::sync::Mutex::new(None),
             tasks: Mutex::new(vec![]),
             cpu: Mutex::default(),
+            oom: Mutex::default(),
         }
     }
 
@@ -116,7 +119,10 @@ impl Runtime {
             let started = Instant::now();
             client.ping().await?;
             let ms = started.elapsed().as_millis() as u64;
-            Ok::<_, anyhow::Error>((snapshot::fetch(&client, &Options { stats: settings.collect_stats, cpu: &self.cpu }).await?, ms))
+            Ok::<_, anyhow::Error>((
+                snapshot::fetch(&client, &Options { stats: settings.collect_stats, cpu: &self.cpu, oom: &self.oom }).await?,
+                ms,
+            ))
         }
         .await;
         match result {
@@ -200,6 +206,8 @@ pub struct Manager {
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
     /// Services whose stored lines are being deleted, as (connection, service).
     deleting: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
+    /// Why the last cleanup of the store failed, until one succeeds again.
+    maintenance_error: Mutex<Option<String>>,
 }
 
 impl Manager {
@@ -213,6 +221,7 @@ impl Manager {
             alerts: Alerts::default(),
             runtimes: Mutex::new(HashMap::new()),
             deleting: Arc::default(),
+            maintenance_error: Mutex::default(),
         });
         let store = m.store.clone();
         tokio::task::spawn_blocking(move || {
@@ -401,6 +410,11 @@ impl Manager {
         true
     }
 
+    /// Why the last cleanup of the log store failed, if it did.
+    pub fn maintenance_error(&self) -> Option<String> {
+        self.maintenance_error.lock().unwrap().clone()
+    }
+
     /// The services of a connection whose stored lines are being deleted.
     pub fn deleting(&self, conn: &str) -> Vec<String> {
         self.deleting.lock().unwrap().iter().filter(|(c, _)| c == conn).map(|(_, s)| s.clone()).collect()
@@ -412,7 +426,18 @@ impl Manager {
                 let s = self.config().settings;
                 let before = chrono::Utc::now().timestamp_micros() - s.retention_days.max(1) as i64 * 86_400_000_000;
                 let store = self.store.clone();
-                let _ = tokio::task::spawn_blocking(move || store.retain(before, s.max_store_mb * 1024 * 1024)).await;
+                let r = tokio::task::spawn_blocking(move || store.retain(before, s.max_store_mb * 1024 * 1024)).await;
+                // A failing cleanup (a full disk, say) lets the store grow past
+                // its limit, so it is logged and shown in Preferences.
+                let error = match r {
+                    Ok(Ok(_)) => None,
+                    Ok(Err(e)) => Some(format!("{e:#}")),
+                    Err(e) => Some(e.to_string()),
+                };
+                if let Some(e) = &error {
+                    tracing::warn!("could not clean up the log store: {e}");
+                }
+                *self.maintenance_error.lock().unwrap() = error;
                 // Every minute: a host with chatty services can write a lot in an hour.
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }

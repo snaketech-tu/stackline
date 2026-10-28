@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app, type StackFilter } from '../lib/state.svelte'
   import { plural } from '../lib/format'
+  import { svcProblem } from '../lib/health'
   import type { ServiceRef } from '../lib/types'
   import Icon from '../components/Icon.svelte'
   import ServiceTable from '../components/ServiceTable.svelte'
@@ -9,15 +10,14 @@
   let needle = $derived(app.stackQ.trim().toLowerCase())
   const matches = (s: ServiceRef) =>
     !needle || s.name.toLowerCase().includes(needle) || s.image.toLowerCase().includes(needle) || s.stack.toLowerCase().includes(needle)
-  const problem = (s: ServiceRef) => s.running < s.desired || (s.tasks.some((t) => t.health === 'unhealthy'))
   const keep: Record<StackFilter, (s: ServiceRef) => boolean> = {
     all: () => true,
-    problems: problem,
+    problems: svcProblem,
     pinned: (s) => app.isPinned(s.key),
   }
   let counts = $derived({
     all: app.services.length,
-    problems: app.services.filter(problem).length,
+    problems: app.services.filter(svcProblem).length,
     pinned: app.pinnedServices.length,
   })
 

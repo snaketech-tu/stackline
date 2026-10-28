@@ -17,6 +17,13 @@ The local store shrinks again when lines are deleted, a smoother log stream, and
 - Deleted log lines now give their space back to the disk. Before, the store file kept its size after deleting a service's lines, after clearing all stored logs and when old lines expired, so the size in Preferences never went down. A store that grew this way shrinks on its own within a minute of starting 0.3.2
 - The size of the local store in Preferences now updates while the page is open
 - A container stopped with `docker stop` or `docker compose stop`, or created but never started, counts as stopped instead of failing, so its stack no longer shows as failing. A container that crashed still does
+- A container killed for running out of memory still counts as failing and says so, although it ends with the same exit code (137) as one that was stopped
+- A stack with an unhealthy container shows as degraded on the Overview too, as it already did on the Stacks page, and the service shows "unhealthy"
+
+### Smaller changes
+- Stacks show how many of their services are stopped next to their status, on the Overview and the Stacks page
+- CPU usage shows on the first refresh instead of the second
+- If removing old lines fails (for example because the disk is full), the error is logged and Preferences warns that the store can grow past its limit
 
 ## 0.3.1
 
