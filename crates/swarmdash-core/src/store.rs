@@ -32,6 +32,9 @@ pub struct Store {
     /// The (conn, service, ts) index exists. It is built in the background
     /// the first time, see [`Store::upgrade`].
     service_index: std::sync::atomic::AtomicBool,
+    /// Counts clears of the store, so collectors read their sources again
+    /// from the start instead of going on after lines that are gone.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 /// Idle read connections kept open; more are opened while busy.
@@ -473,6 +476,7 @@ impl Store {
             path,
             minutes_since: since.into(),
             service_index: service_index.into(),
+            epoch: Default::default(),
         })
     }
 
@@ -831,7 +835,15 @@ impl Store {
         })
     }
 
+    /// Changes whenever stored lines of a whole connection are cleared.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
+        // First, so lines a collector is reading right now are not stored
+        // after the clear with a cursor that would skip everything before them.
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let deleted = self.delete_entries(conn, None)?;
         if deleted > 0 {
             self.merge_index()?;

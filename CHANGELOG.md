@@ -13,6 +13,7 @@ The local store shrinks again when lines are deleted, a smoother log stream, and
 - The Logs tab of a service starts with 300 lines, like the Logs page, and says how many more **Show more** adds
 
 ### Fixed
+- After **Clear stored logs**, swarmdash now loads the logs Docker still has again, for the whole retention. Before, it only collected lines written after the clear, so longer ranges such as 3h or 24h stayed empty in the graph and the stream
 - Deleted log lines now give their space back to the disk. Before, the store file kept its size after deleting a service's lines, after clearing all stored logs and when old lines expired, so the size in Preferences never went down. A store that grew this way shrinks on its own within a minute of starting 0.3.2
 - The size of the local store in Preferences now updates while the page is open
 - A container stopped with `docker stop` or `docker compose stop`, or created but never started, counts as stopped instead of failing, so its stack no longer shows as failing. A container that crashed still does
