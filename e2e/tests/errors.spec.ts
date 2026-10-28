@@ -41,6 +41,6 @@ test('an error group opens its lines in Logs', async ({ page }) => {
   const drawer = await openErrors(page, 'shop')
   await drawer.locator('.ecard').first().getByRole('button', { name: /^Show all .* in Logs$/ }).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)
-  await expect(page).toHaveURL(/#logs$/)
+  await expect(page).toHaveURL(/#logs\?.*g=[0-9a-f]+/)
   await expect(page.locator('.stream .row').first()).toBeVisible()
 })

@@ -226,6 +226,8 @@
       {#if qInput}<button class="ib" style="width:22px;height:22px" onclick={() => setQ('')} aria-label="Clear search"><Icon name="x" size={12} /></button>{:else}<kbd class="hide-sm">/</kbd>{/if}
     </label>
     <button class="ctl" class:live={L.live} aria-pressed={L.live} onclick={toggleLive}><span class="live-dot"></span>Live</button>
+    <button class="ctl" onclick={() => app.copy(app.logLink(), 'Link copied. It opens this view with the same time range, in a browser or pasted into Ctrl K.')}
+      title="Copy a link to this view, with its time range fixed"><Icon name="link" size={14} /><span class="hide-sm">Copy link</span></button>
     <DownloadMenu />
   </div>
   <div class="ph" style="border-top:1px solid var(--line);border-bottom:0;padding-bottom:0">

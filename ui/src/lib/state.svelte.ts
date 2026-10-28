@@ -173,6 +173,42 @@ class LogsState extends LogFilters {
     this.to = to
   }
 
+  /**
+   * The filters as the part of a link after `#`: `logs?c=…&t=1h&s=…`. With
+   * `fixed`, a preset becomes the range it covers now, so the link shows the
+   * same lines when it is opened later.
+   */
+  link(conn: string, fixed = false): string {
+    const p = new URLSearchParams({ c: conn })
+    if (!this.preset || fixed) {
+      const [from, to] = this.window()
+      p.set('t', `${Math.floor(from)}-${Math.ceil(to)}`)
+    } else if (this.preset !== 'auto') p.set('t', this.preset)
+    if (this.sources.size) p.set('s', [...this.sources].join(','))
+    if (this.soloLevels) p.set('l', [...this.levels].join(','))
+    if (this.q.trim()) p.set('q', this.q.trim())
+    if (this.group) p.set('g', this.group)
+    return 'logs?' + p.toString()
+  }
+
+  /** Shows what a link made by `link` describes. Values it does not know are left out. */
+  applyLink(p: URLSearchParams) {
+    this.reset()
+    const t = p.get('t') ?? ''
+    const range = /^(\d+)-(\d+)$/.exec(t)
+    if (range && +range[1] < +range[2]) this.zoom(+range[1], +range[2])
+    else if (t in PRESETS) this.setPreset(t as Preset)
+    this.sources.clear()
+    for (const src of (p.get('s') ?? '').split(',')) if (src) this.sources.add(src)
+    const levels = (p.get('l') ?? '').split(',').filter((l): l is Level => (LEVELS as string[]).includes(l))
+    if (levels.length) {
+      this.levels.clear()
+      levels.forEach((l) => this.levels.add(l))
+    }
+    this.q = p.get('q') ?? ''
+    this.group = p.get('g') || null
+  }
+
   /** Puts back the sources last picked on a connection. */
   restoreSources(conn: string) {
     this.sources.clear()
@@ -260,6 +296,13 @@ class AppState {
         const v = JSON.stringify([...this.logs.sources])
         save(`swarmdash-sources-${untrack(() => this.activeId)}`, v)
       })
+      // The address of the Logs page follows its filters, so it can be bookmarked,
+      // reloaded or copied. Replaced in place: filters are not steps of Back.
+      $effect(() => {
+        if (this.view !== 'logs') return
+        const h = '#' + this.logs.link(this.activeId)
+        if (location.hash !== h) history.replaceState(history.state, '', h)
+      })
       $effect(() => {
         save('swarmdash-stack-filter', this.stackFilter)
         save('swarmdash-stack-q', this.stackQ)
@@ -267,6 +310,8 @@ class AppState {
     })
   }
 
+  /** The connection a link opened before the connections were loaded. */
+  #linkConn: string | null = null
   #timer: ReturnType<typeof setTimeout> | null = null
   #toastTimer: ReturnType<typeof setTimeout> | null = null
   #seq = 0
@@ -286,9 +331,12 @@ class AppState {
       this.connections = connections
       this.settings = settings
       if (!connections.some((c) => c.id === this.activeId)) {
-        this.activeId = connections[0]?.id ?? 'local'
-        this.logs.restoreSources(this.activeId)
-      }
+        const missing = this.#linkConn
+        this.activeId = connections.find((c) => c.id === load('swarmdash-conn'))?.id ?? connections[0]?.id ?? 'local'
+        if (missing) this.notify(`This link is for the connection “${missing}”, which is not set up here. It shows ${this.active?.name ?? 'another one'} instead.`, 'err')
+        else this.logs.restoreSources(this.activeId)
+      } else if (this.#linkConn) save('swarmdash-conn', this.activeId)
+      this.#linkConn = null
     } catch (e) {
       this.fatal = this.describe(e)
       return
@@ -382,12 +430,34 @@ class AppState {
   }
 
   route() {
-    const h = location.hash.slice(1) as View
+    const hash = location.hash.slice(1)
+    const at = hash.indexOf('?')
+    const h = (at < 0 ? hash : hash.slice(0, at)) as View
     this.view = VIEWS.some(([v]) => v === h) ? h : 'overview'
+    if (this.view === 'logs' && at >= 0) this.openLink(new URLSearchParams(hash.slice(at + 1)))
+  }
+
+  /** Opens a log link: its connection, then its filters. */
+  openLink(p: URLSearchParams) {
+    const c = p.get('c')
+    if (c && c !== this.activeId) {
+      // While the connections are still loading, init checks this one.
+      if (!this.connections.length) {
+        this.activeId = c
+        this.#linkConn = c
+      } else if (this.connections.some((x) => x.id === c)) this.select(c)
+      else this.notify(`This link is for the connection “${c}”, which is not set up here. It shows ${this.active?.name ?? 'this one'} instead.`, 'err')
+    }
+    this.logs.applyLink(p)
+  }
+
+  /** The address of the current Logs view, with its range fixed, for others to open. */
+  logLink(): string {
+    return `${location.origin}${location.pathname}#${this.logs.link(this.activeId, true)}`
   }
 
   go(view: View) {
-    if (location.hash.slice(1) === view) this.view = view
+    if (location.hash.slice(1).split('?')[0] === view) this.view = view
     else location.hash = view
   }
 
@@ -561,10 +631,10 @@ class AppState {
     this.settings = await put<Settings>('/settings', s)
   }
 
-  async copy(text: string) {
+  async copy(text: string, done = 'Copied to the clipboard.') {
     try {
       await navigator.clipboard.writeText(text)
-      this.notify('Copied to the clipboard.')
+      this.notify(done)
     } catch {
       this.notify('The clipboard is not available here.', 'err')
     }

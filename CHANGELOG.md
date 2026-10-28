@@ -11,6 +11,8 @@ its GitHub release, and swarmdash shows it in the update dialog.
 - A service's panel lists its stops and crashes of the last 24 hours, each with **Lines before**. A container stopped with `docker stop` or by an update counts as stopped, not crashed
 - On swarms, failed tasks on other nodes are taken from the swarm's task history
 - Graphs of less than 10 minutes show seconds on the time axis
+- **Links to a Logs view.** The address of the Logs page now holds its filters: connection, time range, sources, levels, search and error group. Reload it, bookmark it or open it in another tab and you get the same view
+- **Copy link** on the Logs page copies that address with the time range fixed, so it shows the same lines tomorrow. Paste it into a browser, or into Ctrl K in the desktop app or someone else's swarmdash with a connection of the same name
 
 ### Fixed
 - The top bar is see-through with a blur again in Chrome, Edge and the Windows desktop app. The CSS build kept only the Safari spelling of the blur

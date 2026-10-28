@@ -32,7 +32,8 @@ that opens the dashboard in your browser.
 - **Make repeated errors readable.** Group similar errors by exception and message,
   inspect their frequency over time, and expand the full trace.
 - **Search and share logs.** Filter by service, stack, level, node or replica;
-  zoom into the timeline, follow live logs, and export `.log`, `.jsonl` or `.csv`.
+  zoom into the timeline, follow live logs, copy a link to the view, and export
+  `.log`, `.jsonl` or `.csv`.
   Structured JSON logs include support for ECS, Logstash, Serilog, pino and zap.
 - **See when containers crashed.** Starts, stops, crashes, out-of-memory kills
   and failed health checks from Docker's events are marked on the time graphs,
