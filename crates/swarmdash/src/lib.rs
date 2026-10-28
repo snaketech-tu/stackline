@@ -47,6 +47,12 @@ pub struct AppState {
     pub updater: Arc<Updater>,
 }
 
+/// The whole HTTP service: sign-in guard, JSON API and embedded UI. Exposed
+/// for tests that drive it without a listening socket.
+pub fn router(state: Arc<AppState>) -> axum::Router {
+    web::router(state)
+}
+
 /// Binds the server and starts it in the background.
 pub async fn start(opts: ServeOptions) -> Result<Server> {
     let manager = Manager::new(opts.paths)?;

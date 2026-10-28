@@ -3,7 +3,7 @@
 
 import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
-import { ApiError, api, post, put } from './api'
+import { ApiError, api, post, put, type LogParams } from './api'
 import type {
   Alert, AlertsResponse, Collect, ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
@@ -52,9 +52,59 @@ export function save(key: string, v: string) {
 /** The pin key of a service: `stack/service`. */
 export const pinKey = (s: { stack: string; name: string }) => `${s.stack}/${s.name}`
 
-/** Filters of the logs view. Kept here so they survive switching views. */
-class LogsState {
+/** How many lines a stream shows at first, how many "Show more" adds, and the most the store returns at once. */
+export const LINES = { first: 300, step: 500, max: 5000 }
+
+/** What every log stream has: the levels shown, the open entries and how many lines are listed. */
+export class LogFilters {
   levels = new SvelteSet<Level>(LEVELS)
+  openRows = new SvelteSet<number>()
+  /** How many of the newest lines the stream shows. "Show more" raises it. */
+  limit = $state(LINES.first)
+
+  /** Click shows only that level; with `add` (Shift-click) it is switched on or off. */
+  pickLevel(l: Level, add: boolean) {
+    if (add) {
+      if (this.levels.has(l)) this.levels.delete(l)
+      else this.levels.add(l)
+      if (!this.levels.size) this.allLevels()
+      return
+    }
+    const solo = this.levels.size === 1 && this.levels.has(l)
+    this.levels.clear()
+    for (const x of solo ? LEVELS : [l]) this.levels.add(x)
+  }
+
+  allLevels() {
+    LEVELS.forEach((l) => this.levels.add(l))
+  }
+
+  /** Fewer than all levels are shown. */
+  get soloLevels(): boolean {
+    return this.levels.size < LEVELS.length
+  }
+
+  toggleRow(id: number) {
+    if (this.openRows.has(id)) this.openRows.delete(id)
+    else this.openRows.add(id)
+  }
+
+  /** Shows more of the newest lines, up to what the store returns at once. */
+  more() {
+    this.limit = Math.min(LINES.max, this.limit + LINES.step)
+  }
+
+  /** Back to every level, nothing open, the first lines only. */
+  resetFilters() {
+    this.levels.clear()
+    this.allLevels()
+    this.openRows.clear()
+    this.limit = LINES.first
+  }
+}
+
+/** Filters of the logs view. Kept here so they survive switching views. */
+class LogsState extends LogFilters {
   /** Picked sources: full service names, or `stack:<name>` for a whole stack. Any of them matches. */
   sources = new SvelteSet<string>()
   q = $state('')
@@ -65,9 +115,6 @@ class LogsState {
   to = $state(Date.now())
   live = $state(false)
   collapse = $state(true)
-  openRows = new SvelteSet<number>()
-  /** How many of the newest lines the stream shows. "Show more" raises it. */
-  limit = $state(300)
   /** Error groups above the stream (it gets the full width) or beside it. */
   groupsAt = $state<'top' | 'side'>(load('swarmdash-groups-at') === 'side' ? 'side' : 'top')
   groupsOpen = $state(load('swarmdash-groups-open') !== '0')
@@ -77,6 +124,7 @@ class LogsState {
   /** Where `auto` starts: the oldest stored line, within the retention, at least 15 minutes back. */
   autoFrom: () => number
   constructor(autoFrom: () => number) {
+    super()
     this.autoFrom = autoFrom
   }
 
@@ -90,9 +138,9 @@ class LogsState {
   }
 
   /** Query parameters for the current filters. */
-  params(): Record<string, string | number> {
+  params(): LogParams {
     const [from, to] = this.window()
-    const p: Record<string, string | number> = { from: Math.floor(from), to: Math.ceil(to), levels: [...this.levels].join(',') }
+    const p: LogParams = { from: Math.floor(from), to: Math.ceil(to), levels: [...this.levels].join(',') }
     const q = [this.q.trim(), this.group ? `fp:${this.group}` : ''].filter(Boolean).join(' ')
     if (q) p.q = q
     const stacks = [...this.sources].filter((s) => s.startsWith('stack:')).map((s) => s.slice(6))
@@ -124,19 +172,6 @@ class LogsState {
     this.to = to
   }
 
-  /** Click shows only that level; with `add` (Shift-click) it is switched on or off. */
-  pickLevel(l: Level, add: boolean) {
-    if (add) {
-      if (this.levels.has(l)) this.levels.delete(l)
-      else this.levels.add(l)
-      if (!this.levels.size) LEVELS.forEach((x) => this.levels.add(x))
-      return
-    }
-    const solo = this.levels.size === 1 && this.levels.has(l)
-    this.levels.clear()
-    for (const x of solo ? LEVELS : [l]) this.levels.add(x)
-  }
-
   /** Puts back the sources last picked on a connection. */
   restoreSources(conn: string) {
     this.sources.clear()
@@ -154,13 +189,10 @@ class LogsState {
 
   /** Back to the default filters. The picked sources stay: they are the services someone follows. */
   reset() {
-    this.levels.clear()
-    LEVELS.forEach((l) => this.levels.add(l))
+    this.resetFilters()
     this.q = ''
     this.group = null
-    this.openRows.clear()
     this.live = false
-    this.limit = 300
     this.maxi = false
     this.setPreset('auto')
   }
@@ -263,7 +295,8 @@ class AppState {
     this.loadUpdate()
     this.poll()
     this.loadAlerts()
-    setInterval(() => this.loadAlerts(), 15000)
+    // Only while alerts are on: the server has nothing to say otherwise.
+    setInterval(() => (this.settings?.alertEnabled ? this.loadAlerts() : (this.alerts = [])), 15000)
   }
 
   // ---- error-rate alerts ----
@@ -308,11 +341,24 @@ class AppState {
     }
   }
 
-  /** Shows the errors behind an alert: its connection, errors only, over the alert's window. */
+  /**
+   * Shows the errors behind an alert: its connection, every service (the
+   * alert counts them all, so picked sources would hide some), errors only,
+   * over the alert's own window.
+   */
   openAlert(a: Alert) {
     this.select(a.conn)
     this.showLogs([], ['ERROR'])
-    this.logs.setPreset('15m')
+    this.logs.sources.clear()
+    const now = Date.now()
+    this.logs.zoom(now - a.windowMins * 60e3, now)
+  }
+
+  /** The stored range of the active connection: at most `max` ms back, at least 15 minutes. */
+  storedRange(max: number): { from: number; to: number } {
+    const to = Date.now()
+    const oldest = this.errors?.oldest ? this.errors.oldest / 1000 : 0
+    return { from: Math.floor(Math.max(to - max, Math.min(oldest, to - 15 * 60e3))), to }
   }
 
 

@@ -138,6 +138,7 @@ async fn delete_connection(st: St, Path(id): Path<String>) -> Result<StatusCode,
     st.manager.update_config(|c| {
         c.connections.retain(|x| x.id != id);
         c.pins.remove(&id);
+        c.collect.remove(&id);
     })?;
     let store = st.manager.store.clone();
     tokio::task::spawn_blocking(move || store.clear(Some(&id))).await.map_err(|e| anyhow::anyhow!(e))??;

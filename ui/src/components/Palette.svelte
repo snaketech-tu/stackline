@@ -2,9 +2,9 @@
   // Ctrl K: jump to a service, stack, error group, page or connection.
   import { onMount } from 'svelte'
   import { app, VIEWS } from '../lib/state.svelte'
-  import { api, query } from '../lib/api'
+  import { fetchLogs } from '../lib/api'
   import { firstLine } from '../lib/format'
-  import type { Group, LogResponse } from '../lib/types'
+  import type { Group } from '../lib/types'
   import Icon from './Icon.svelte'
 
   type Item = { kind: string; label: string; right: string; text: string; run: () => void; logs?: () => void; html?: boolean }
@@ -18,7 +18,7 @@
   onMount(() => {
     input?.focus()
     const to = Date.now()
-    api<LogResponse>(`/c/${encodeURIComponent(app.activeId)}/logs?${query({ from: to - 3600e3, to, levels: 'ERROR', buckets: 1, limit: 1 })}`)
+    fetchLogs(app.activeId, { from: to - 3600e3, to, levels: 'ERROR', buckets: 1, limit: 1 })
       .then((r) => (groups = r.result.groups))
       .catch(() => {})
   })

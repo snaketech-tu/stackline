@@ -1,8 +1,8 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
-  import { api, query } from '../lib/api'
+  import { fetchLogs } from '../lib/api'
   import { ago, bytes, firstLine, hhmm, pct, plural, tidy } from '../lib/format'
-  import { memPct, nodeDot, nodeRole, stackState } from '../lib/health'
+  import { memPct, nodeDot, nodeRole, stackState, svcProblem } from '../lib/health'
   import type { LogResponse, ServiceRef } from '../lib/types'
   import Ring from '../components/Ring.svelte'
   import ErrSpark from '../components/ErrSpark.svelte'
@@ -14,7 +14,8 @@
   let single = $derived(snap.nodes.length <= 1)
   let host = $derived(snap.host)
   let services = $derived(app.services.filter((s) => s.desired > 0 || s.running > 0))
-  let healthy = $derived(services.filter((s) => s.running >= s.desired).length)
+  // The same rule as the Stacks page: all replicas up and none failing its health check.
+  let healthy = $derived(services.filter((s) => !svcProblem(s)).length)
   let tasks = $derived(app.services.flatMap((s) => s.tasks))
   let running = $derived(tasks.filter((t) => t.state === 'running').length)
   let managers = $derived(snap.nodes.filter((n) => n.role === 'manager'))
@@ -30,19 +31,19 @@
   $effect(() => {
     const id = app.activeId
     void app.snap?.fetchedAt
-    const to = Date.now()
-    const oldest = app.errors?.oldest ? app.errors.oldest / 1000 : 0
-    const from = Math.floor(Math.max(to - 6 * 3600e3, Math.min(oldest, to - 15 * 60e3)))
-    api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from, to, levels: 'ERROR,WARN', buckets: 48, limit: 1 })}`)
-      .then((r) => {
+    const r = app.storedRange(6 * 3600e3)
+    fetchLogs(id, { ...r, levels: 'ERROR,WARN', buckets: 48, limit: 1 })
+      .then((x) => {
         // An answer for a connection that is no longer selected must not show up here.
         if (id !== app.activeId) return
-        hist = r
-        win = { from, to }
+        hist = x
+        win = r
       })
       .catch(() => {})
   })
-  let top = $derived(hist?.result.groups[0])
+  // The most frequent error of the chart's window, which is longer than the hour the count covers.
+  let top = $derived(hist?.result.groups.find((g) => g.level === 'ERROR'))
+  let topSpan = $derived(win.to - win.from > 5.9 * 3600e3 ? 'in the last 6 h' : `since ${hhmm(win.from)}`)
 
   // The newest line of each service that has nothing running: usually the reason it fails.
   let lastLines = $state<Record<string, string>>({})
@@ -52,7 +53,7 @@
     void app.snap?.fetchedAt
     const to = Date.now()
     for (const s of failing) {
-      api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from: to - 6 * 3600e3, to, service: s.fullName, buckets: 1, limit: 1 })}`)
+      fetchLogs(id, { from: to - 6 * 3600e3, to, service: s.fullName, buckets: 1, limit: 1 })
         .then((r) => {
           const e = r.result.entries[0]
           if (e && id === app.activeId) lastLines[s.fullName] = tidy(firstLine(e.text))
@@ -102,7 +103,7 @@
       out.push({
         sev: 'err',
         title: `<b>${err1}</b> ${err1 === 1 ? 'error' : 'errors'} in the last hour`,
-        why: top ? `Most frequent: ${top.pattern.slice(0, 140)} (${top.count}×${top.services.length ? ', ' + top.services.join(', ') : ''})` : 'Open the logs to see them grouped',
+        why: top ? `Most frequent ${topSpan}: ${(top.pattern || firstLine(top.sample)).slice(0, 140)} (${top.count}×${top.services.length ? ', ' + top.services.join(', ') : ''})` : 'Open the logs to see them grouped',
         acts: [{ label: 'Errors', run: errorsOnly }, ...(top ? [{ label: 'Top group', run: () => app.showGroup(top!.fp, top!.services), ghost: true }] : [])],
       })
     }

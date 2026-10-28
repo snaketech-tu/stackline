@@ -49,7 +49,7 @@
   <span class="msg">{#if !open}{#each marks(head, terms) as m, i (i)}{#if m.m}<mark>{m.t}</mark>{:else}{m.t}{/if}{/each}{#if e.lines > 1}<span class="rep" title="Multi-line entry, reassembled per replica">{e.lines} lines</span>{/if}{/if}{#if n > 1}<span class="rep">+{n - 1} similar</span>{/if}</span>
   {#if hot || open}<span class="ra">
     {#if service && onservice}<button class="ib" title="Only {e.service}" aria-label="Only {e.service}" onclick={() => onservice?.()}><Icon name="filter" size={13} /></button>{/if}
-    {#if oncontext}<button class="ib" title="Show 30 s before and after" aria-label="Show 30 seconds around it" onclick={() => oncontext?.()}><Icon name="clock" size={13} /></button>{/if}
+    {#if oncontext}<button class="ib" title="Show what this container printed 30 s before and after" aria-label="Show 30 seconds around it" onclick={() => oncontext?.()}><Icon name="clock" size={13} /></button>{/if}
     <button class="ib" title="Copy (c)" aria-label="Copy" onclick={() => app.copy(e.text)}><Icon name="copy" size={13} /></button>
   </span>{/if}
   {#if open}
