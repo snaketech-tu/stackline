@@ -2,7 +2,7 @@
   import { app } from '../lib/state.svelte'
   import { api, query } from '../lib/api'
   import { ago, bytes, firstLine, hhmm, pct, plural, tidy } from '../lib/format'
-  import { memPct, nodeDot, nodeRole } from '../lib/health'
+  import { memPct, nodeDot, nodeRole, stackState } from '../lib/health'
   import type { LogResponse, ServiceRef } from '../lib/types'
   import Ring from '../components/Ring.svelte'
   import ErrSpark from '../components/ErrSpark.svelte'
@@ -261,15 +261,14 @@
       <thead><tr><th>Stack</th><th>Services</th><th>Status</th><th class="hide-sm">Errors 1h</th><th class="hide-sm">Last update</th><th class="actcell"><span class="sr">Actions</span></th></tr></thead>
       <tbody>
         {#each snap.stacks as st (st.name)}
-          {@const live = st.services.filter((s) => s.desired > 0 || s.running > 0)}
-          {@const bad = live.filter((s) => s.running < s.desired)}
+          {@const state = stackState(st.services)}
           {@const e = stackErrors(st.name)}
           {@const upd = Math.max(0, ...st.services.map((s) => s.updatedAt ?? 0))}
           <tr class="click" onclick={() => openStack(st.name)}>
             <td><b>{st.name}</b> <span class="kind">{st.kind}</span></td>
             <td>{st.services.length}</td>
             <td>
-              {#if bad.length}{#if bad.some((s) => !s.running)}<span class="pill err">failing</span>{:else}<span class="pill warn">degraded</span>{/if}{:else}<span class="pill ok">healthy</span>{/if}
+              <span class="pill {state.cls}">{state.label}</span>{#if state.stopped}<span class="muted stopped">{state.stopped} stopped</span>{/if}
             </td>
             <td class="hide-sm mono" style:color={e ? 'var(--err)' : 'var(--muted)'}>{e}</td>
             <td class="hide-sm muted">{upd ? ago(upd, app.now) : '–'}</td>

@@ -35,12 +35,15 @@ struct SourceState {
     error: Option<String>,
     /// The `tail` of the next poll; grows for replicas that write a lot.
     tail: usize,
+    /// The store's epoch when this read started; see [`Store::epoch`].
+    epoch: u64,
 }
 
 pub struct Collector {
     conn: String,
     store: Arc<Store>,
     states: HashMap<String, SourceState>,
+    epoch: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -52,12 +55,20 @@ pub struct PollReport {
 
 impl Collector {
     pub fn new(conn: &str, store: Arc<Store>) -> Self {
-        Self { conn: conn.to_string(), store, states: HashMap::new() }
+        let epoch = store.epoch();
+        Self { conn: conn.to_string(), store, states: HashMap::new(), epoch }
     }
 
     /// Reads new lines from every source. `retention_us` bounds the first read of a new source.
     pub async fn poll(&mut self, client: &DockerClient, sources: Vec<LogSource>, retention_us: i64) -> PollReport {
         let now = chrono::Utc::now().timestamp_micros();
+        // After "Clear stored logs" every source is read again from the
+        // start of the retention, so the cleared range fills up again.
+        let epoch = self.store.epoch();
+        if epoch != self.epoch {
+            self.states.clear();
+            self.epoch = epoch;
+        }
         let keys: std::collections::HashSet<String> = sources.iter().map(|s| s.key.clone()).collect();
         self.states.retain(|k, _| keys.contains(k));
         for src in sources {
@@ -67,9 +78,11 @@ impl Collector {
                 last_read: None,
                 error: None,
                 tail: TAIL_MIN,
+                epoch,
                 src: src.clone(),
             });
             st.src = src;
+            st.epoch = epoch;
             if st.cursor.is_none() {
                 st.cursor = self.store.cursor(&self.conn, &st.src.key).ok().flatten();
             }
@@ -165,7 +178,7 @@ async fn read_source(
             } else {
                 st.assembler.flush(&mut entries);
             }
-            let n = flush(store, conn, &st.src, &mut entries, last_ts).await?;
+            let n = flush(store, conn, st, &mut entries, last_ts).await?;
             st.cursor = last_ts;
             return Ok(n);
         }
@@ -206,7 +219,7 @@ async fn read_stream(
         decoder.push(&data, &mut lines);
         consume(st, &mut lines, &mut entries, &mut last_ts);
         if entries.len() >= BATCH {
-            written += flush(store, conn, &st.src, &mut entries, last_ts).await?;
+            written += flush(store, conn, st, &mut entries, last_ts).await?;
         }
     }
     decoder.finish(&mut lines);
@@ -216,7 +229,7 @@ async fn read_stream(
     } else {
         st.assembler.flush(&mut entries);
     }
-    written += flush(store, conn, &st.src, &mut entries, last_ts).await?;
+    written += flush(store, conn, st, &mut entries, last_ts).await?;
     st.cursor = last_ts;
     Ok(written)
 }
@@ -239,11 +252,15 @@ fn consume(
     }
 }
 
-async fn flush(store: &Arc<Store>, conn: &str, src: &LogSource, entries: &mut Vec<LogEntry>, last_ts: Option<i64>) -> Result<usize> {
+async fn flush(store: &Arc<Store>, conn: &str, st: &SourceState, entries: &mut Vec<LogEntry>, last_ts: Option<i64>) -> Result<usize> {
     let batch = std::mem::take(entries);
     let n = batch.len();
-    let (store, conn, src) = (store.clone(), conn.to_string(), src.clone());
+    let (store, conn, src, epoch) = (store.clone(), conn.to_string(), st.src.clone(), st.epoch);
     tokio::task::spawn_blocking(move || -> Result<()> {
+        // The store was cleared during this read: the next poll starts over.
+        if store.epoch() != epoch {
+            return Ok(());
+        }
         store.insert(&conn, &src, &batch)?;
         if let Some(ts) = last_ts {
             store.set_cursor(&conn, &src.key, ts)?;

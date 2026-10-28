@@ -4,7 +4,7 @@
   import { SvelteSet } from 'svelte/reactivity'
   import { app } from '../lib/state.svelte'
   import { ago, bytes, pct, plural } from '../lib/format'
-  import { svcState } from '../lib/health'
+  import { stackState, svcState } from '../lib/health'
   import type { ServiceRef, Stack } from '../lib/types'
   import Icon from './Icon.svelte'
   import PinButton from './PinButton.svelte'
@@ -41,11 +41,13 @@
       {#if groups}
         {#each groups as g (g.name)}
           {@const isClosed = closed.has(g.name)}
+          {@const state = stackState(app.services.filter((s) => s.stack === g.name))}
           <tr class="grouphead" class:closed={isClosed}>
             <td colspan={cols}>
               <div class="gh">
                 <button class="tg" aria-expanded={!isClosed} onclick={() => toggle(g.name)}><Icon name="chevD" size={14} />{g.name}</button>
                 <span class="kind">{g.kind}</span>
+                <span class="pill {state.cls}">{state.label}</span>{#if state.stopped}<span class="muted stopped">{state.stopped} stopped</span>{/if}
                 <span class="muted hide-sm" style="font-size:12.5px">{g.services.length === g.total ? plural(g.total, 'service') : `${g.services.length} of ${g.total} services`}</span>
                 <span class="spacer"></span>
                 {#if collectCol}<span class="toggle" title="Collect the logs of every service in {g.name}"><span class="hide-sm">Whole stack</span><CollectSwitch names={g.services.map((s) => s.fullName)} label={g.name} /></span>{/if}

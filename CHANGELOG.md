@@ -3,6 +3,39 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## Unreleased
+
+### Fixed
+- The top bar is see-through with a blur again in Chrome, Edge and the Windows desktop app. The CSS build kept only the Safari spelling of the blur
+- An error group whose message is too long for its title now ends in "…" instead of stopping in the middle of a word. The full message is in the sample below it, as before
+- A search typed on the Logs page is no longer lost when you switch to another page within a quarter of a second
+
+### Tests
+- UI tests click through swarmdash in a browser against the demo Compose project on every pull request. They cover error messages cut off, menus drawn under cards, the store size not updating, clearing the store, and filters kept between pages, and fail if swarmdash sends Docker anything but a read
+- A store test has a noisy service write several times the size limit and checks that the file on disk stays under it
+
+## 0.3.2
+
+The local store shrinks again when lines are deleted, a smoother log stream, and stacks no longer show as failing because of services you stopped.
+
+### Smoother log stream
+- Log rows are much lighter: the hover buttons are only drawn for rows you point at, which cuts the page from about 91,000 to 33,000 elements at 5,000 lines. **Show more** is about twice as fast, and scrolling through 1,300 lines stays at full frame rate
+- A very long single line is cut short in the collapsed row (the full text shows when you open it), and an open entry with hundreds of lines shows the first 200 with a **Show all** button
+- The Logs tab of a service starts with 300 lines, like the Logs page, and says how many more **Show more** adds
+
+### Fixed
+- After **Clear stored logs**, swarmdash now loads the logs Docker still has again, for the whole retention. Before, it only collected lines written after the clear, so longer ranges such as 3h or 24h stayed empty in the graph and the stream
+- Deleted log lines now give their space back to the disk. Before, the store file kept its size after deleting a service's lines, after clearing all stored logs and when old lines expired, so the size in Preferences never went down. A store that grew this way shrinks on its own within a minute of starting 0.3.2
+- The size of the local store in Preferences now updates while the page is open
+- A container stopped with `docker stop` or `docker compose stop`, or created but never started, counts as stopped instead of failing, so its stack no longer shows as failing. A container that crashed still does
+- A container killed for running out of memory still counts as failing and says so, although it ends with the same exit code (137) as one that was stopped
+- A stack with an unhealthy container shows as degraded on the Overview too, as it already did on the Stacks page, and the service shows "unhealthy"
+
+### Smaller changes
+- Stacks show how many of their services are stopped next to their status, on the Overview and the Stacks page
+- CPU usage shows on the first refresh instead of the second
+- If removing old lines fails (for example because the disk is full), the error is logged and Preferences warns that the store can grow past its limit
+
 ## 0.3.1
 
 Much less work for your server, a faster Logs page and faster log deletion.

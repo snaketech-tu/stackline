@@ -29,6 +29,18 @@ pub fn strip_prefix(line: &str) -> &str {
 
 /// Replaces the parts of a message that change between occurrences.
 pub fn normalize(line: &str) -> String {
+    let s = normalize_full(line);
+    s[..cut_at(&s)].to_string()
+}
+
+/// Patterns are kept to this many bytes: enough to tell groups apart.
+const PATTERN_MAX: usize = 300;
+
+fn cut_at(s: &str) -> usize {
+    super::level::floor_char_boundary(s, PATTERN_MAX)
+}
+
+fn normalize_full(line: &str) -> String {
     let mut s = strip_prefix(line).to_string();
     s = regex!(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b").replace_all(&s, "<uuid>").into_owned();
     s = regex!(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+").replace_all(&s, "<email>").into_owned();
@@ -49,8 +61,7 @@ pub fn normalize(line: &str) -> String {
     s = regex!(r"'[^'\s]*\d[^'\s]*'").replace_all(&s, "'<str>'").into_owned();
     s = regex!(r"\d+(?:\.\d+)?").replace_all(&s, "<n>").into_owned();
     s = regex!(r"\s+").replace_all(&s, " ").into_owned();
-    let s = s.trim();
-    s[..super::level::floor_char_boundary(s, 300)].to_string()
+    s.trim().to_string()
 }
 
 /// A stack frame without its line number, so a redeploy keeps the same group.
@@ -86,7 +97,8 @@ pub struct Fingerprint {
 
 /// `head` is the message line shown to people; `trace` the stack, if any.
 pub fn fingerprint(service: &str, head: &str, trace: Option<&str>, error_type: Option<&str>) -> Fingerprint {
-    let pattern = normalize(head);
+    let full = normalize_full(head);
+    let pattern = &full[..cut_at(&full)];
     let mut key = format!("{service}\n");
     match trace {
         Some(tr) => {
@@ -98,11 +110,13 @@ pub fn fingerprint(service: &str, head: &str, trace: Option<&str>, error_type: O
             }
             if ty.is_empty() {
                 key.push('\n');
-                key.push_str(&pattern);
+                key.push_str(pattern);
             }
         }
-        None => key.push_str(&pattern),
+        None => key.push_str(pattern),
     }
+    // A cut title says so, instead of ending in the middle of a word.
+    let pattern = if pattern.len() < full.len() { format!("{pattern}…") } else { pattern.to_string() };
     Fingerprint { id: format!("{:016x}", xxh3_64(key.as_bytes())), pattern }
 }
 
@@ -138,6 +152,18 @@ mod tests {
         );
         assert_eq!(normalize("log rotated"), "log rotated");
         assert_eq!(normalize("ERROR"), "ERROR");
+    }
+
+    #[test]
+    fn a_long_title_is_cut_with_an_ellipsis() {
+        let long = format!("job import gave up: {}", "upstream timed out, ".repeat(30));
+        let f = fingerprint("worker", &long, None, None);
+        assert!(f.pattern.ends_with('…'), "{}", f.pattern);
+        assert!(f.pattern.len() <= PATTERN_MAX + '…'.len_utf8());
+        // The group stays the one older versions made from the cut text.
+        let key = format!("worker\n{}", normalize(&long));
+        assert_eq!(f.id, format!("{:016x}", xxh3_64(key.as_bytes())));
+        assert!(!fingerprint("worker", "job import gave up", None, None).pattern.ends_with('…'));
     }
 
     #[test]

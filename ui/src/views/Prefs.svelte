@@ -36,6 +36,14 @@
   $effect(() => {
     loadStats()
   })
+  // The size grows while logs come in, so it follows along while the page is open.
+  $effect(() => {
+    const t = setInterval(async () => {
+      if (document.hidden) return
+      stats = await api<StoreStats>('/store').catch(() => stats)
+    }, 15000)
+    return () => clearInterval(t)
+  })
   // While lines are being deleted, the sizes follow along until it is done.
   $effect(() => {
     if (!usage?.deleting.length) return
@@ -205,6 +213,9 @@
       </span>
       <span class="d mono" style="font-size:11.5px;word-break:break-all">{app.meta?.storePath}</span>
     </div>
+    {#if stats?.maintenanceError}
+      <div class="maint" role="alert"><Icon name="bell" size={14} /><span><b>Old lines could not be removed.</b> The store can grow past its limit until this works again: {stats.maintenanceError}</span></div>
+    {/if}
     {#if usage?.services.length}
       <div class="usage">
         <div class="uh"><b>Space per service on {app.active?.name}</b><span class="muted">Text of the stored lines. Switch a service off to stop collecting it; the Stacks page has the same switches.</span></div>

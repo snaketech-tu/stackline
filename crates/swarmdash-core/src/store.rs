@@ -32,6 +32,9 @@ pub struct Store {
     /// The (conn, service, ts) index exists. It is built in the background
     /// the first time, see [`Store::upgrade`].
     service_index: std::sync::atomic::AtomicBool,
+    /// Counts clears of the store, so collectors read their sources again
+    /// from the start instead of going on after lines that are gone.
+    epoch: std::sync::atomic::AtomicU64,
 }
 
 /// Idle read connections kept open; more are opened while busy.
@@ -473,6 +476,7 @@ impl Store {
             path,
             minutes_since: since.into(),
             service_index: service_index.into(),
+            epoch: Default::default(),
         })
     }
 
@@ -653,17 +657,40 @@ impl Store {
             }
             self.merge_index()?;
         }
-        let db = self.db.lock().unwrap();
-        let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
-        if mode != 2 {
-            // Stores made before 0.3 could never shrink: switch them over once.
-            tracing::info!("rebuilding the log store once so it can give space back");
-            db.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
-        } else if deleted > 0 {
-            db.execute_batch("PRAGMA incremental_vacuum;")?;
+        {
+            let db = self.db.lock().unwrap();
+            let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+            if mode != 2 {
+                // Stores made before 0.3 could never shrink: switch them over once.
+                tracing::info!("rebuilding the log store once so it can give space back");
+                db.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+            }
         }
-        checkpoint(&db)?;
+        // Also when nothing was deleted now: up to 0.3.1 free space was never
+        // given back, so stores made by those versions shrink here once.
+        self.shrink()?;
         Ok(deleted)
+    }
+
+    /// Gives free pages back to the system and moves the write-ahead log
+    /// into the file, so the file shrinks on disk. In steps that release the
+    /// lock in between, so queries and new lines get through.
+    fn shrink(&self) -> Result<()> {
+        const STEP: u64 = 4096;
+        let mut last = u64::MAX;
+        loop {
+            let db = self.db.lock().unwrap();
+            let free: u64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+            if free == 0 || free >= last {
+                return checkpoint(&db);
+            }
+            last = free;
+            // Each step of this pragma frees one page, so it is run to the end:
+            // run once, as `execute_batch` does, it freed a single page.
+            let mut st = db.prepare(&format!("PRAGMA incremental_vacuum({})", free.min(STEP)))?;
+            let mut rows = st.query([])?;
+            while rows.next()?.is_some() {}
+        }
     }
 
     /// Merges the search index so deleted lines leave it, like FTS5's
@@ -700,9 +727,7 @@ impl Store {
         let deleted = self.delete_entries(Some(conn), Some(service))?;
         if deleted > 0 {
             self.merge_index()?;
-            let db = self.db.lock().unwrap();
-            db.execute_batch("PRAGMA incremental_vacuum;")?;
-            checkpoint(&db)?;
+            self.shrink()?;
         }
         Ok(deleted)
     }
@@ -810,7 +835,15 @@ impl Store {
         })
     }
 
+    /// Changes whenever stored lines of a whole connection are cleared.
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
+        // First, so lines a collector is reading right now are not stored
+        // after the clear with a cursor that would skip everything before them.
+        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let deleted = self.delete_entries(conn, None)?;
         if deleted > 0 {
             self.merge_index()?;
@@ -825,9 +858,8 @@ impl Store {
             }
             None => db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
         }
-        db.execute_batch("PRAGMA incremental_vacuum;")?;
-        checkpoint(&db)?;
-        Ok(())
+        drop(db);
+        self.shrink()
     }
 }
 
@@ -1418,6 +1450,112 @@ mod tests {
         let r = store.query("c1", &all, 1, 1).unwrap();
         assert!(r.total > 0 && r.total < 20_000);
         assert_eq!(r.entries[0].ts, now + 19_999 * 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_lines_shrinks_the_file() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-shrink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logs.db");
+        let store = Store::open(&path).unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let text = "2026-10-27 INFO ".to_string() + &"chatty ".repeat(60);
+        let fill = |svc: &str| {
+            for chunk in 0..10 {
+                let lines: Vec<(i64, String)> = (0..1000).map(|i| (now + (chunk * 1000 + i) * 1000, format!("{text}{i}"))).collect();
+                let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+                store.insert("c1", &src(svc, "1"), &entries(&refs)).unwrap();
+            }
+        };
+        fill("shop_api");
+        fill("shop_web");
+        let on_disk = || store.stats().unwrap().bytes;
+        let full = on_disk();
+        store.clear_service("c1", "shop_api").unwrap();
+        let half = on_disk();
+        assert!(half < full * 2 / 3, "{half} of {full} after deleting half the lines");
+        // Free pages that older versions left behind go back at the next retention run.
+        fill("shop_db");
+        store.db.lock().unwrap().execute("DELETE FROM entries WHERE service = 'shop_db'", []).unwrap();
+        let stale = on_disk();
+        store.retain(0, u64::MAX).unwrap();
+        assert!(on_disk() < stale * 4 / 5, "{} of {stale} after the retention run", on_disk());
+        store.clear(None).unwrap();
+        assert!(on_disk() < 1_000_000, "{} left after clearing everything", on_disk());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_noisy_service_never_pushes_the_store_past_its_limit() {
+        // One service writes several times the limit, with stack traces and
+        // varied text the search index cannot compress, while a quiet one
+        // keeps logging. Retention runs after each round, as the runtime does
+        // every minute, and the file on disk (what Preferences shows) must
+        // stay under the limit every time.
+        let dir = std::env::temp_dir().join(format!("swarmdash-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("logs.db")).unwrap();
+        const LIMIT: u64 = 4 << 20;
+        let now = 1_700_000_000_000_000i64;
+        let mut t = now;
+        let mut written = 0u64;
+        for round in 0..20i64 {
+            for burst in 0..4 {
+                let mut lines = vec![];
+                for i in 0..1500 {
+                    let n = round * 6000 + burst * 1500 + i;
+                    t += 1000;
+                    if n % 10 == 0 {
+                        lines.push((
+                            t,
+                            format!("2026-10-27 12:00:00.000 ERROR 1 --- [exec-{}] c.a.Checkout : Checkout failed for cart {n:x}", n % 8),
+                        ));
+                        lines.push((t, format!("java.lang.IllegalStateException: cart {:x} has no owner", n * 2654435761)));
+                        for f in 0..6 {
+                            lines.push((t, format!("\tat com.acme.shop.Layer{f}.call{}(Layer{f}.java:{})", n % 97, n % 400 + f)));
+                        }
+                    } else {
+                        lines.push((
+                            t,
+                            format!(
+                                "2026-10-27 12:00:00.000  INFO 1 --- [exec-{}] c.a.Api : GET /api/items/{n} 200 id={:016x} trace={:x}",
+                                n % 8,
+                                n * 2654435761,
+                                n * 40503
+                            ),
+                        ));
+                    }
+                }
+                written += lines.iter().map(|(_, l)| l.len() as u64).sum::<u64>();
+                let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+                store.insert("c1", &src("shop_api", "1"), &entries(&refs)).unwrap();
+                store
+                    .insert("c1", &src("shop_web", "1"), &entries(&[(t, "2026-10-27 12:00:00.000  INFO 1 --- [main] c.a.Web : ok")]))
+                    .unwrap();
+            }
+            // The open Logs page reads while lines come in.
+            store.query("c1", &LogFilter { from: now, to: t, ..Default::default() }, 60, 300).unwrap();
+            store.retain(0, LIMIT).unwrap();
+            let s = store.stats().unwrap();
+            assert!(s.bytes <= LIMIT, "round {round}: {} KB on disk, limit {} KB", s.bytes >> 10, LIMIT >> 10);
+            assert!(s.entries > 0, "round {round}: retention deleted everything");
+        }
+        assert!(written > LIMIT * 3, "the service wrote only {} KB", written >> 10);
+        // The newest lines stay, the oldest went.
+        let r = store.query("c1", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 1).unwrap();
+        assert_eq!(r.entries[0].ts, t);
+        assert!(store.stats().unwrap().oldest.unwrap() > now + 1000 * 6000);
+        // Search still finds recent lines and none of the deleted ones.
+        let mut f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        f.apply_query(&format!("id={:016x}", 119_999 * 2654435761u64));
+        assert_eq!(store.query("c1", &f, 1, 1).unwrap().total, 1);
+        let mut f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        f.apply_query(&format!("id={:016x}", 2654435761u64));
+        assert_eq!(store.query("c1", &f, 1, 1).unwrap().total, 0);
+        drop(store);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

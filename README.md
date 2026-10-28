@@ -269,6 +269,27 @@ docker compose -p swarmdash-demo -f dev/demo/compose.yaml down
 A [demo Swarm stack](dev/demo/stack.yaml) is also available. For release
 instructions, see [RELEASING.md](RELEASING.md).
 
+### UI tests
+
+The [UI tests](e2e/tests) click through swarmdash in a browser while the demo
+Compose project runs, and check the things that broke before: error messages
+cut off, menus drawn under cards, the store size not updating, filters lost
+on the way between pages. swarmdash reaches Docker through a guard that
+refuses anything but reads, and the last test fails if swarmdash sent one.
+CI runs them on every pull request. To run them yourself on Linux or macOS,
+start the demo project, build the UI and swarmdash, then:
+
+```sh
+cd e2e
+npm ci
+npx playwright install chromium
+npx playwright test
+```
+
+They start their own swarmdash on port 7171 with an empty data folder
+(`e2e/.run`), so your own connections and stored logs are not touched. Set
+`SWARMDASH_BIN` to test another build, such as `target/release/swarmdash`.
+
 ## License
 
 Licensed under [Apache-2.0](LICENSE).

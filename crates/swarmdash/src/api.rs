@@ -423,7 +423,9 @@ async fn open_url(st: St, Json(input): Json<OpenInput>) -> Result<StatusCode, Ap
 async fn store_stats(st: St) -> Result<Json<Value>, ApiError> {
     let store = st.manager.store.clone();
     let s = tokio::task::spawn_blocking(move || store.stats()).await.map_err(|e| anyhow::anyhow!(e))??;
-    Ok(Json(json!(s)))
+    let mut v = json!(s);
+    v["maintenanceError"] = json!(st.manager.maintenance_error());
+    Ok(Json(v))
 }
 
 async fn clear_store(st: St) -> Result<StatusCode, ApiError> {

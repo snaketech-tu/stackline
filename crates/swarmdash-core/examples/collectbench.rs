@@ -15,7 +15,7 @@ async fn main() {
     let polls: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(5);
     let client = DockerClient::new(Endpoint::local_default());
     let cpu = Default::default();
-    let snap = snapshot::fetch(&client, &Options { stats: false, cpu: &cpu }).await.unwrap();
+    let snap = snapshot::fetch(&client, &Options { stats: false, cpu: &cpu, oom: &Default::default() }).await.unwrap();
     let sources = snap.log_sources();
     println!("{} sources", sources.len());
     let dir = std::env::temp_dir().join(format!("collectbench-{}", std::process::id()));
