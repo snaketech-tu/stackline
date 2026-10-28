@@ -37,6 +37,9 @@ while true; do
         echo "    raise ConnectionError(self._error_message(e))" >&2
         echo "redis.exceptions.ConnectionError: Error 111 connecting to redis:6379. Connection refused." >&2
       fi
+      if [ $((n % 8)) -eq 0 ]; then
+        echo "ERROR:worker:job import-catalog#$n gave up after 5 attempts: GET https://catalog.example.com/api/v2/products?page=$((n % 40))&size=500&include=prices,stock,images,variants answered 503 Service Unavailable (upstream supplier-feed-eu-central-1 timed out after 30000ms, retry budget exhausted, next run scheduled by cron)" >&2
+      fi
       ;;
     caddy)
       printf '{"level":"info","ts":%s.123,"logger":"http.log.access.log0","msg":"handled request","request":{"remote_ip":"10.0.0.%s","method":"GET","host":"shop.example.com","uri":"/api/projects/%s"},"duration":0.0%s,"status":%s}\n' "$(date +%s)" "$((n % 200))" "$n" "$((n % 90 + 10))" "$([ $((n % 13)) -eq 0 ] && echo 502 || echo 200)"

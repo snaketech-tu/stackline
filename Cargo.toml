@@ -13,3 +13,7 @@ repository = "https://github.com/snaketech-tu/swarmdash"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# SQLite does the heavy lifting in the store tests; unoptimized it is several times slower.
+[profile.dev.package.libsqlite3-sys]
+opt-level = 3

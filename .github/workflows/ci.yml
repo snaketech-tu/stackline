@@ -75,3 +75,45 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy -p swarmdash-desktop -- -D warnings
       - run: cargo build -p swarmdash-desktop
+
+  # Clicks through the UI of `swarmdash serve` in a browser, against the demo Compose project.
+  e2e:
+    needs: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: ui/dist
+      - name: Start the demo project
+        run: |
+          # Docker Hub limits anonymous pulls; Google's mirror of the official images does not.
+          for img in alpine:3.20 postgres:16-alpine; do
+            docker pull -q "mirror.gcr.io/library/$img" && docker tag "mirror.gcr.io/library/$img" "$img" || docker pull -q "$img"
+          done
+          docker compose -p demo -f dev/demo/compose.yaml up -d --pull never
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p swarmdash
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+        working-directory: e2e
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      - name: Wait until the demo has logged every kind of error
+        run: timeout 90 sh -c 'until docker logs demo-worker-1 2>&1 | grep -q import-catalog; do sleep 2; done'
+      - run: npx playwright test
+        working-directory: e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: e2e-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7

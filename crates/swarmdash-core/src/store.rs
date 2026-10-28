@@ -1488,6 +1488,78 @@ mod tests {
     }
 
     #[test]
+    fn a_noisy_service_never_pushes_the_store_past_its_limit() {
+        // One service writes several times the limit, with stack traces and
+        // varied text the search index cannot compress, while a quiet one
+        // keeps logging. Retention runs after each round, as the runtime does
+        // every minute, and the file on disk (what Preferences shows) must
+        // stay under the limit every time.
+        let dir = std::env::temp_dir().join(format!("swarmdash-limit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("logs.db")).unwrap();
+        const LIMIT: u64 = 4 << 20;
+        let now = 1_700_000_000_000_000i64;
+        let mut t = now;
+        let mut written = 0u64;
+        for round in 0..20i64 {
+            for burst in 0..4 {
+                let mut lines = vec![];
+                for i in 0..1500 {
+                    let n = round * 6000 + burst * 1500 + i;
+                    t += 1000;
+                    if n % 10 == 0 {
+                        lines.push((
+                            t,
+                            format!("2026-10-27 12:00:00.000 ERROR 1 --- [exec-{}] c.a.Checkout : Checkout failed for cart {n:x}", n % 8),
+                        ));
+                        lines.push((t, format!("java.lang.IllegalStateException: cart {:x} has no owner", n * 2654435761)));
+                        for f in 0..6 {
+                            lines.push((t, format!("\tat com.acme.shop.Layer{f}.call{}(Layer{f}.java:{})", n % 97, n % 400 + f)));
+                        }
+                    } else {
+                        lines.push((
+                            t,
+                            format!(
+                                "2026-10-27 12:00:00.000  INFO 1 --- [exec-{}] c.a.Api : GET /api/items/{n} 200 id={:016x} trace={:x}",
+                                n % 8,
+                                n * 2654435761,
+                                n * 40503
+                            ),
+                        ));
+                    }
+                }
+                written += lines.iter().map(|(_, l)| l.len() as u64).sum::<u64>();
+                let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+                store.insert("c1", &src("shop_api", "1"), &entries(&refs)).unwrap();
+                store
+                    .insert("c1", &src("shop_web", "1"), &entries(&[(t, "2026-10-27 12:00:00.000  INFO 1 --- [main] c.a.Web : ok")]))
+                    .unwrap();
+            }
+            // The open Logs page reads while lines come in.
+            store.query("c1", &LogFilter { from: now, to: t, ..Default::default() }, 60, 300).unwrap();
+            store.retain(0, LIMIT).unwrap();
+            let s = store.stats().unwrap();
+            assert!(s.bytes <= LIMIT, "round {round}: {} KB on disk, limit {} KB", s.bytes >> 10, LIMIT >> 10);
+            assert!(s.entries > 0, "round {round}: retention deleted everything");
+        }
+        assert!(written > LIMIT * 3, "the service wrote only {} KB", written >> 10);
+        // The newest lines stay, the oldest went.
+        let r = store.query("c1", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 1).unwrap();
+        assert_eq!(r.entries[0].ts, t);
+        assert!(store.stats().unwrap().oldest.unwrap() > now + 1000 * 6000);
+        // Search still finds recent lines and none of the deleted ones.
+        let mut f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        f.apply_query(&format!("id={:016x}", 119_999 * 2654435761u64));
+        assert_eq!(store.query("c1", &f, 1, 1).unwrap().total, 1);
+        let mut f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        f.apply_query(&format!("id={:016x}", 2654435761u64));
+        assert_eq!(store.query("c1", &f, 1, 1).unwrap().total, 0);
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn clearing_keeps_the_search_index_in_step() {
         let store = Store::open_in_memory().unwrap();
         let now = 1_700_000_000_000_000i64;

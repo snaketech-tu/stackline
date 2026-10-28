@@ -3,6 +3,17 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## Unreleased
+
+### Fixed
+- The top bar is see-through with a blur again in Chrome, Edge and the Windows desktop app. The CSS build kept only the Safari spelling of the blur
+- An error group whose message is too long for its title now ends in "…" instead of stopping in the middle of a word. The full message is in the sample below it, as before
+- A search typed on the Logs page is no longer lost when you switch to another page within a quarter of a second
+
+### Tests
+- UI tests click through swarmdash in a browser against the demo Compose project on every pull request. They cover error messages cut off, menus drawn under cards, the store size not updating, clearing the store, and filters kept between pages, and fail if swarmdash sends Docker anything but a read
+- A store test has a noisy service write several times the size limit and checks that the file on disk stays under it
+
 ## 0.3.2
 
 The local store shrinks again when lines are deleted, a smoother log stream, and stacks no longer show as failing because of services you stopped.
