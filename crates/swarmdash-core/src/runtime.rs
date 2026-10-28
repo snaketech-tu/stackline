@@ -14,6 +14,7 @@ use crate::collector::Collector;
 use crate::config::{AppConfig, ConnectionConfig, ConnectionKind, Paths, Settings};
 use crate::docker::ssh::SshTunnel;
 use crate::docker::{DockerClient, Endpoint};
+use crate::events::EventPoller;
 use crate::model::Snapshot;
 use crate::snapshot::{self, Options};
 use crate::store::Store;
@@ -304,6 +305,7 @@ impl Manager {
         let r = rt.clone();
         let log_task = tokio::spawn(async move {
             let mut collector = Collector::new(&r.cfg.id, m.store.clone());
+            let mut events = EventPoller::new(&r.cfg.id, m.store.clone());
             let mut bound: Option<String> = None;
             loop {
                 let settings = m.config().settings;
@@ -319,6 +321,7 @@ impl Manager {
                                 if cleared {
                                     tracing::info!("{} now reaches another host; its stored logs were cleared", r.cfg.name);
                                     collector = Collector::new(&r.cfg.id, m.store.clone());
+                                    events = EventPoller::new(&r.cfg.id, m.store.clone());
                                 }
                                 bound = Some(identity);
                             }
@@ -329,7 +332,10 @@ impl Manager {
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
                     let collect = m.config().collect.remove(&r.cfg.id).unwrap_or_default();
                     let sources = snap.log_sources().into_iter().filter(|s| collect.wants(&s.service)).collect();
-                    let report = collector.poll(&client, sources, retention).await;
+                    let mut report = collector.poll(&client, sources, retention).await;
+                    if let Err(e) = events.poll(&client, &snap, retention).await {
+                        report.errors.push(format!("container events: {e:#}"));
+                    }
                     let mut st = r.state.write().unwrap();
                     st.logs_synced_at = Some(chrono::Utc::now().timestamp_millis());
                     st.log_errors = report.errors;

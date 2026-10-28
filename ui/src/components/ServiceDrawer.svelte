@@ -2,10 +2,11 @@
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
   import { app, LEVELS, LINES, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
-  import { api, fetchLogs, keepEntries, query } from '../lib/api'
+  import { api, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
+  import { eventColor, eventLabel, isCrash } from '../lib/events'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
-  import type { Level, LogResponse, ServiceDetails } from '../lib/types'
+  import type { DockerEvent, Level, LogResponse, ServiceDetails } from '../lib/types'
   import Drawer from './Drawer.svelte'
   import Histogram from './Histogram.svelte'
   import Icon from './Icon.svelte'
@@ -58,6 +59,8 @@
   })
 
   let hist = $state.raw<LogResponse | null>(null)
+  /** Starts, stops and crashes of the last 24 hours. */
+  let events = $state.raw<DockerEvent[]>([])
   let lines = $state.raw<LogResponse | null>(null)
   let win = $state({ from: 0, to: 0 })
 
@@ -75,7 +78,15 @@
         win = r
       })
       .catch(() => {})
+    const now = Date.now()
+    fetchEvents(app.activeId, { from: now - 24 * 3600e3, to: now + 60e3, service: name, limit: 200 })
+      .then((x) => (events = x))
+      .catch(() => {})
   })
+  // Starts alone are noise: shown are the ones that say something went wrong or changed.
+  let notable = $derived(events.filter((e) => e.kind !== 'start').reverse())
+  let crashes = $derived(events.filter(isCrash).length)
+  const when = (ts: number) => (app.now - ts / 1000 > 20 * 3600e3 ? dateTime(ts / 1000) : hhmm(ts / 1000))
 
   // Lines: the logs tab, and the newest line for a failing service.
   let linesSeq = 0
@@ -120,6 +131,7 @@
     F.limit = LINES.first
     lines = null
     hist = null
+    events = []
     details = null
     app.drawer = { kind: 'service', key: next.key, tab }
   }
@@ -199,6 +211,26 @@
           <Spark values={g.spark} warn={g.level === 'WARN'} />
           <span class="meta">last {ago(g.last / 1000, app.now)}{#if groups.length > 1}{' · '}{groups.length - 1} more {groups.length === 2 ? 'group' : 'groups'}{/if}</span>
         </button>
+      </div>
+    {/if}
+    {#if notable.length}
+      <div>
+        <h4>Stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
+        <div class="tw boxed">
+          <table class="evlist">
+            <tbody>
+              {#each notable.slice(0, 8) as e (e.ts + e.source + e.kind)}
+                <tr>
+                  <td class="mono muted" style="white-space:nowrap" title={dateTime(e.ts / 1000)}>{when(e.ts)}</td>
+                  <td class="mono" style="white-space:nowrap">#{e.replica}</td>
+                  <td style:color={eventColor(e) === 'var(--muted)' ? undefined : eventColor(e)}>{eventLabel(e)}</td>
+                  <td class="actcell"><button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button></td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if notable.length > 8}<span class="muted" style="font-size:12px">and {notable.length - 8} earlier</span>{/if}
       </div>
     {/if}
     {@const d = details}
@@ -316,7 +348,7 @@
     {/if}
     <div>
       <h4>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? 'last 6h' : `since ${hhmm(win.from)}`}</h4>
-      {#if hist}<div class="boxed"><Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} height={110} /></div>{/if}
+      {#if hist}<div class="boxed"><Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} height={110} marks={events} /></div>{/if}
     </div>
   {:else if tab === 'logs'}
     <div class="fbar">

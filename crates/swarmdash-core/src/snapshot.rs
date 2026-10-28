@@ -69,6 +69,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot
 
     let mut stacks: Vec<Stack> = Vec::new();
     let mut nodes: Vec<Node> = Vec::new();
+    let mut task_failures = Vec::new();
     let mode = if swarm_state == "active" && is_manager { Mode::Swarm } else { Mode::Standalone };
     if swarm_state == "active" && !is_manager {
         warnings
@@ -82,6 +83,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot
         nodes = raw_nodes.iter().map(|n| map_node(n, &local_node_id)).collect();
         let hostnames: HashMap<String, String> = nodes.iter().map(|n| (n.id.clone(), n.hostname.clone())).collect();
         stacks = map_swarm(&services, &tasks, &hostnames);
+        task_failures = failed_tasks(&services, &tasks, &hostnames);
         for n in &mut nodes {
             n.tasks_running = stacks
                 .iter()
@@ -115,7 +117,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot
     stacks.extend(map_containers(&containers, &local_host));
     stacks.sort_by(|a, b| (a.kind == StackKind::Standalone, &a.name).cmp(&(b.kind == StackKind::Standalone, &b.name)));
 
-    let mut snap = Snapshot { mode, host, nodes, stacks, fetched_at: chrono::Utc::now().timestamp_millis(), warnings };
+    let mut snap = Snapshot { mode, host, nodes, stacks, fetched_at: chrono::Utc::now().timestamp_millis(), warnings, task_failures };
     if opts.stats {
         add_stats(client, &mut snap, &containers, opts.cpu).await;
     }
@@ -275,6 +277,38 @@ fn map_swarm(services: &[Value], tasks: &[Value], hostnames: &HashMap<String, St
         .map(|(name, mut services)| {
             services.sort_by(|a, b| a.name.cmp(&b.name));
             Stack { name: if name.is_empty() { "services".into() } else { name }, kind: StackKind::Swarm, services }
+        })
+        .collect()
+}
+
+/// Every task in the swarm's history that failed or was rejected, on any node.
+fn failed_tasks(services: &[Value], tasks: &[Value], hostnames: &HashMap<String, String>) -> Vec<TaskFailure> {
+    let by_id: HashMap<String, &Value> = services.iter().map(|sv| (s(&sv["ID"]), sv)).collect();
+    tasks
+        .iter()
+        .filter(|t| matches!(s(&t["Status"]["State"]).as_str(), "failed" | "rejected"))
+        .filter_map(|t| {
+            let sv = by_id.get(&s(&t["ServiceID"]))?;
+            let spec = &sv["Spec"];
+            let stack = spec["Labels"][STACK_NAMESPACE].as_str().filter(|x| !x.is_empty()).unwrap_or("services").to_string();
+            let node_id = s(&t["NodeID"]);
+            let node = hostnames.get(&node_id).cloned().unwrap_or(node_id);
+            let replica = match t["Slot"].as_u64() {
+                Some(n) if n > 0 => n.to_string(),
+                _ => node.clone(),
+            };
+            let st = &t["Status"];
+            Some(TaskFailure {
+                task_id: s(&t["ID"]),
+                ts: chrono::DateTime::parse_from_rfc3339(st["Timestamp"].as_str()?).ok()?.timestamp_micros(),
+                stack,
+                service: s(&spec["Name"]),
+                replica,
+                node,
+                container: s(&st["ContainerStatus"]["ContainerID"]),
+                exit_code: st["ContainerStatus"]["ExitCode"].as_i64().filter(|c| *c != 0),
+                error: st["Err"].as_str().filter(|e| !e.is_empty()).map(str::to_string),
+            })
         })
         .collect()
 }

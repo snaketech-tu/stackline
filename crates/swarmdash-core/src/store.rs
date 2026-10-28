@@ -14,6 +14,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use serde::Serialize;
 
 use crate::docker::frames::StreamKind;
+use crate::events::{Event, Kind};
 use crate::logs::{Level, LogEntry};
 use crate::model::LogSource;
 
@@ -121,6 +122,24 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS patterns (conn TEXT NOT NULL, fp TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (conn, fp));
 CREATE TABLE IF NOT EXISTS cursors (conn TEXT NOT NULL, source TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (conn, source));
 CREATE TABLE IF NOT EXISTS hosts (conn TEXT PRIMARY KEY, identity TEXT NOT NULL);
+-- Container starts, stops and crashes; see events.rs. The columns the log
+-- filters use are named as in `entries`, so the same filters apply.
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY,
+    conn TEXT NOT NULL,
+    key TEXT NOT NULL,
+    ts INTEGER NOT NULL,
+    stack TEXT NOT NULL,
+    service TEXT NOT NULL,
+    replica TEXT NOT NULL,
+    node TEXT NOT NULL,
+    source TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    exit_code INTEGER,
+    detail TEXT,
+    UNIQUE (conn, key)
+);
+CREATE INDEX IF NOT EXISTS events_conn_ts ON events (conn, ts);
 "#;
 
 /// Filters shared by queries and exports. Times are Unix microseconds.
@@ -585,6 +604,68 @@ impl Store {
         Ok(())
     }
 
+    /// Stores events read from Docker; ones already stored are skipped.
+    /// Returns how many were new.
+    pub fn insert_events(&self, conn: &str, events: &[Event]) -> Result<usize> {
+        let mut db = self.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let mut n = 0;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT OR IGNORE INTO events (conn, key, ts, stack, service, replica, node, source, kind, exit_code, detail)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            )?;
+            for e in events {
+                n += ins.execute(params![
+                    conn,
+                    e.key,
+                    e.ts,
+                    e.stack,
+                    e.service,
+                    e.replica,
+                    e.node,
+                    e.source,
+                    e.kind.as_str(),
+                    e.exit_code,
+                    e.detail
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// The newest events in the filter's time range and sources, oldest
+    /// first. Levels, error groups and search words do not apply to events.
+    pub fn events(&self, conn: &str, f: &LogFilter, limit: usize) -> Result<Vec<Event>> {
+        let f = LogFilter { fps: vec![], text: vec![], levels: vec![], no_levels: false, ..f.clone() };
+        let (w, mut p) = f.where_clause(conn, false);
+        p.push(Sql::Integer(limit as i64));
+        self.read(|db| {
+            let mut stmt = db.prepare(&format!(
+                "SELECT key, ts, stack, service, replica, node, source, kind, exit_code, detail FROM events WHERE {w} ORDER BY ts DESC LIMIT ?"
+            ))?;
+            let mut out: Vec<Event> = stmt
+                .query_map(params_from_iter(p), |r| {
+                    Ok(Event {
+                        key: r.get(0)?,
+                        ts: r.get(1)?,
+                        stack: r.get(2)?,
+                        service: r.get(3)?,
+                        replica: r.get(4)?,
+                        node: r.get(5)?,
+                        source: r.get(6)?,
+                        kind: Kind::parse(&r.get::<_, String>(7)?).unwrap_or(Kind::Crash),
+                        exit_code: r.get(8)?,
+                        detail: r.get(9)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<_>>()?;
+            out.reverse();
+            Ok(out)
+        })
+    }
+
     pub fn query(&self, conn: &str, f: &LogFilter, buckets: usize, limit: usize) -> Result<QueryResult> {
         let since = self.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
         let indexed = self.service_index.load(std::sync::atomic::Ordering::Relaxed);
@@ -628,6 +709,7 @@ impl Store {
                 .unwrap()
                 .execute("DELETE FROM minutes WHERE conn = ?1 AND minute < ?2", params![conn, before.div_euclid(MINUTE)])?;
         }
+        self.db.lock().unwrap().execute("DELETE FROM events WHERE ts < ?1", params![before])?;
         // Over the size limit: drop the oldest lines first, down to 90% of the
         // limit so this does not run again a minute later. Ids grow with
         // arrival, so the rowid order finds them without sorting the table.
@@ -855,8 +937,11 @@ impl Store {
                 db.execute("DELETE FROM patterns WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM cursors WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM hosts WHERE conn = ?1", params![c])?;
+                db.execute("DELETE FROM events WHERE conn = ?1", params![c])?;
             }
-            None => db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
+            None => {
+                db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts; DELETE FROM events;")?
+            }
         }
         drop(db);
         self.shrink()
@@ -1323,6 +1408,38 @@ mod tests {
         assert_eq!(store.query("c1", &all, 10, 100).unwrap().total, 10);
         store.set_cursor("c1", "x", 5).unwrap();
         assert_eq!(store.cursor("c1", "x").unwrap(), Some(5));
+    }
+
+    #[test]
+    fn events_are_stored_once_filtered_like_lines_and_cleared() {
+        let store = Store::open_in_memory().unwrap();
+        let ev = |key: &str, ts: i64, service: &str, kind: Kind| Event {
+            key: key.into(),
+            ts,
+            stack: "demo".into(),
+            service: service.into(),
+            replica: "1".into(),
+            node: "box".into(),
+            source: format!("{key}0123"),
+            kind,
+            exit_code: Some(1),
+            detail: None,
+        };
+        let batch = [ev("a", 10, "demo_app", Kind::Crash), ev("b", 20, "demo_db", Kind::Start), ev("c", 30, "demo_app", Kind::Oom)];
+        assert_eq!(store.insert_events("c1", &batch).unwrap(), 3);
+        assert_eq!(store.insert_events("c1", &batch).unwrap(), 0);
+        let all = LogFilter { from: 0, to: 100, ..Default::default() };
+        let keys = |f: &LogFilter, limit| store.events("c1", f, limit).unwrap().into_iter().map(|e| e.key).collect::<Vec<_>>();
+        assert_eq!(keys(&all, 10), ["a", "b", "c"]);
+        assert_eq!(keys(&all, 2), ["b", "c"]);
+        let mut app = LogFilter { exact_services: vec!["demo_app".into()], ..all.clone() };
+        app.apply_query("level:error timeout container:c01");
+        assert_eq!(keys(&app, 10), ["c"]);
+        assert!(store.events("c2", &all, 10).unwrap().is_empty());
+        store.retain(15, u64::MAX).unwrap();
+        assert_eq!(keys(&all, 10), ["b", "c"]);
+        store.clear(Some("c1")).unwrap();
+        assert!(keys(&all, 10).is_empty());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 // Thin client for the local swarmdash API. The server signs the browser in with
 // a cookie; during development a `?token=` in the page URL is sent as a header.
 
-import type { LogResponse } from './types'
+import type { DockerEvent, LogResponse } from './types'
 
 let devToken: string | null = null
 try {
@@ -66,6 +66,15 @@ export interface LogParams {
 /** Queries the stored logs of a connection. */
 export function fetchLogs(conn: string, p: LogParams): Promise<LogResponse> {
   return api<LogResponse>(`/c/${encodeURIComponent(conn)}/logs?${query({ ...p, from: Math.floor(p.from), to: Math.ceil(p.to) })}`)
+}
+
+/** Container starts, stops and crashes, filtered by the sources of `p`. */
+export async function fetchEvents(conn: string, p: LogParams): Promise<DockerEvent[]> {
+  const { from, to, stack, service, q, limit } = p
+  const r = await api<{ events: DockerEvent[] }>(
+    `/c/${encodeURIComponent(conn)}/events?${query({ from: Math.floor(from), to: Math.ceil(to), stack, service, q, limit })}`,
+  )
+  return r.events
 }
 
 /** Lines already shown keep their objects, so their rows are not drawn again. */

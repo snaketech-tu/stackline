@@ -34,6 +34,9 @@ that opens the dashboard in your browser.
 - **Search and share logs.** Filter by service, stack, level, node or replica;
   zoom into the timeline, follow live logs, and export `.log`, `.jsonl` or `.csv`.
   Structured JSON logs include support for ECS, Logstash, Serilog, pino and zap.
+- **See when containers crashed.** Starts, stops, crashes, out-of-memory kills
+  and failed health checks from Docker's events are marked on the time graphs,
+  each with the log lines its replica printed just before.
 - **See how a service is set up.** Image, command, ports, networks, mounts,
   restart policy, limits, health checks with their latest results, environment
   variables (secret-looking values stay hidden), labels and swarm settings.

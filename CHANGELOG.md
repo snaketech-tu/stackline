@@ -5,6 +5,13 @@ its GitHub release, and swarmdash shows it in the update dialog.
 
 ## Unreleased
 
+### Added
+- **Crashes and restarts on the time graphs.** swarmdash reads when containers start, stop, crash, run out of memory or fail their health check from Docker's events, and keeps them with the logs. The graphs on the Overview, the Logs page and a service's panel mark them with a line, and pointing at a bar lists what happened
+- The Overview says when a service crashed in the last hour, and how often. **Lines before** opens what that replica printed in the 2 minutes before it stopped, which is usually where the reason is
+- A service's panel lists its stops and crashes of the last 24 hours, each with **Lines before**. A container stopped with `docker stop` or by an update counts as stopped, not crashed
+- On swarms, failed tasks on other nodes are taken from the swarm's task history
+- Graphs of less than 10 minutes show seconds on the time axis
+
 ### Fixed
 - The top bar is see-through with a blur again in Chrome, Edge and the Windows desktop app. The CSS build kept only the Safari spelling of the blur
 - An error group whose message is too long for its title now ends in "…" instead of stopping in the middle of a word. The full message is in the sample below it, as before

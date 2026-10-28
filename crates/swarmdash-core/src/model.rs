@@ -32,6 +32,25 @@ pub struct Snapshot {
     /// Unix milliseconds.
     pub fetched_at: i64,
     pub warnings: Vec<String>,
+    /// Tasks of swarm services that failed, from the swarm's task history on
+    /// every node. Stored as events; the page reads them from there.
+    #[serde(skip)]
+    pub task_failures: Vec<TaskFailure>,
+}
+
+/// A swarm task that failed or was rejected.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TaskFailure {
+    pub task_id: String,
+    /// Unix microseconds.
+    pub ts: i64,
+    pub stack: String,
+    pub service: String,
+    pub replica: String,
+    pub node: String,
+    pub container: String,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -1,9 +1,10 @@
 <script lang="ts">
   import { app } from '../lib/state.svelte'
-  import { fetchLogs } from '../lib/api'
+  import { fetchEvents, fetchLogs } from '../lib/api'
+  import { eventLabel, isCrash } from '../lib/events'
   import { ago, bytes, firstLine, hhmm, pct, plural, tidy } from '../lib/format'
   import { memPct, nodeDot, nodeRole, stackState, svcProblem } from '../lib/health'
-  import type { LogResponse, ServiceRef } from '../lib/types'
+  import type { DockerEvent, LogResponse, ServiceRef } from '../lib/types'
   import Ring from '../components/Ring.svelte'
   import ErrSpark from '../components/ErrSpark.svelte'
   import Histogram from '../components/Histogram.svelte'
@@ -41,6 +42,26 @@
       })
       .catch(() => {})
   })
+  // Crashes and failed health checks of the chart's window, marked on it and listed when recent.
+  let events = $state.raw<DockerEvent[]>([])
+  $effect(() => {
+    const id = app.activeId
+    void app.snap?.fetchedAt
+    const to = Date.now()
+    fetchEvents(id, { from: to - 6 * 3600e3, to: to + 60e3, limit: 2000 })
+      .then((x) => {
+        if (id === app.activeId) events = x.filter((e) => isCrash(e) || e.kind === 'unhealthy')
+      })
+      .catch(() => {})
+  })
+  /** Services that crashed in the last hour, newest crash first. */
+  let crashed = $derived.by(() => {
+    const since = app.now - 3600e3
+    const by = new Map<string, DockerEvent[]>()
+    for (const e of events) if (isCrash(e) && e.ts / 1000 >= since) by.set(e.service, [...(by.get(e.service) ?? []), e])
+    return [...by.values()].map((es) => ({ last: es[es.length - 1], n: es.length })).sort((a, b) => b.last.ts - a.last.ts)
+  })
+
   // The most frequent error of the chart's window, which is longer than the hour the count covers.
   let top = $derived(hist?.result.groups.find((g) => g.level === 'ERROR'))
   let topSpan = $derived(win.to - win.from > 5.9 * 3600e3 ? 'in the last 6 h' : `since ${hhmm(win.from)}`)
@@ -85,6 +106,18 @@
       } else if (s.running < s.desired) {
         out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> is under-replicated`, pill: ['warn', `${s.running}/${s.desired}`], why: lastErr(s)?.error ?? `${s.desired - s.running} replica${s.desired - s.running === 1 ? '' : 's'} missing`, acts: acts(s) })
       }
+    }
+    for (const { last, n } of crashed) {
+      const s = app.services.find((x) => x.fullName === last.service)
+      out.push({
+        sev: n >= 3 ? 'err' : 'warn',
+        title: `<b>${esc(last.service)}</b> ${n === 1 ? 'crashed once' : `crashed ${n} times`} in the last hour`,
+        why: `${n === 1 ? '' : 'last: '}replica ${last.replica} ${eventLabel(last)} at ${hhmm(last.ts / 1000)}${last.detail && last.kind !== 'failed' ? ' · ' + last.detail : ''}`,
+        acts: [
+          { label: 'Lines before', run: () => app.showEvent(last) },
+          ...(s ? [{ label: 'Details', run: () => app.openService(s.key), ghost: true }] : []),
+        ],
+      })
     }
     for (const s of services) {
       const t = s.tasks.find((t) => t.state === 'running' && t.health === 'unhealthy')
@@ -207,12 +240,13 @@
   <section class="panel">
     <div class="ph"><h2>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? '6h' : `since ${hhmm(win.from)}`}</h2><span class="pill hide-sm" title="Only logs of the selected connection are shown here">{host.name}</span><span class="spacer"></span><button class="btn ghost sm" onclick={() => app.showLogs([], ['ERROR', 'WARN'])}>Open in Logs</button></div>
     {#if hist}
-      <Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} onrange={(a, z) => { app.showLogs([], ['ERROR', 'WARN']); app.logs.zoom(a, z) }} />
+      <Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} marks={events} onrange={(a, z) => { app.showLogs([], ['ERROR', 'WARN']); app.logs.zoom(a, z) }} />
     {:else}
       <div class="center-empty" style="padding:50px"><span class="spinner"></span></div>
     {/if}
     <div class="legend" style="padding:0 14px 12px 52px">
       <span><i style="background:var(--err)"></i>Errors</span><span><i style="background:var(--warn)"></i>Warnings</span><span><i class="line" style="background:var(--exc)"></i>Exceptions</span>
+      {#if events.length}<span><i class="mark" style="background:var(--err)"></i>Crashes</span>{/if}
     </div>
   </section>
 </div>

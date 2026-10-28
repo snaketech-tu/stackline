@@ -54,6 +54,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/c/{id}/usage/clear", post(clear_usage))
         .route("/c/{id}/logs", get(logs))
         .route("/c/{id}/logs/export", get(export))
+        .route("/c/{id}/events", get(events))
         .route("/c/{id}/errors", get(errors))
         .route("/c/{id}/service", get(service_details))
         .route("/alerts", get(alerts))
@@ -280,6 +281,16 @@ async fn logs(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> Res
     let res = tokio::task::spawn_blocking(move || store.query(&id, &f, buckets, limit)).await.map_err(|e| anyhow::anyhow!(e))??;
     let state = rt.state();
     Ok(Json(json!({ "result": res, "syncedAt": state.logs_synced_at, "logErrors": state.log_errors })))
+}
+
+/// Container starts, stops and crashes, with the source filters of the logs.
+async fn events(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> Result<Json<Value>, ApiError> {
+    st.manager.runtime(&id).ok_or_else(not_found)?;
+    let f = p.filter();
+    let store = st.manager.store.clone();
+    let limit = p.limit.unwrap_or(500).min(5000);
+    let events = tokio::task::spawn_blocking(move || store.events(&id, &f, limit)).await.map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(json!({ "events": events })))
 }
 
 async fn errors(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
