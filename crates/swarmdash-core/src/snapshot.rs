@@ -32,7 +32,10 @@ pub async fn fetch(client: &DockerClient, opts: &Options) -> Result<Snapshot> {
     let is_manager = info["Swarm"]["ControlAvailable"].as_bool().unwrap_or(false);
     let local_node_id = s(&info["Swarm"]["NodeID"]);
 
+    let cluster_id = Some(s(&info["Swarm"]["Cluster"]["ID"])).filter(|c| !c.is_empty() && is_manager);
     let host = Host {
+        id: s(&info["ID"]),
+        cluster_id,
         name: s(&info["Name"]),
         os: s(&info["OperatingSystem"]),
         kernel: s(&info["KernelVersion"]),

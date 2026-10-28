@@ -10,8 +10,10 @@ macro_rules! regex {
     }};
 }
 
+pub mod alerts;
 pub mod collector;
 pub mod config;
+pub mod details;
 pub mod docker;
 pub mod logs;
 pub mod model;

@@ -11,8 +11,10 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use swarmdash::update::{DesktopInstaller, Progress};
 use swarmdash::{ServeOptions, Server};
+use swarmdash_core::alerts::Notifier;
 use swarmdash_core::config::Paths;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
 const PUBKEY: &str = include_str!("../../../crates/swarmdash/updater.pub");
@@ -45,6 +47,16 @@ impl DesktopInstaller for TauriInstaller {
     }
 }
 
+/// Error-rate alerts as native notifications.
+struct TauriNotifier(AppHandle);
+
+impl Notifier for TauriNotifier {
+    fn notify(&self, title: &str, body: &str) -> anyhow::Result<()> {
+        self.0.notification().builder().title(title).body(body).show()?;
+        Ok(())
+    }
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
@@ -57,6 +69,7 @@ fn main() {
                 let _ = w.set_focus();
             }
         }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_updater::Builder::new().pubkey(PUBKEY.trim()).build())
         .setup(|app| {
             let installer: Arc<dyn DesktopInstaller> = Arc::new(TauriInstaller(app.handle().clone()));
@@ -65,6 +78,7 @@ fn main() {
                 paths: Paths::default_paths(),
                 desktop: true,
                 installer: Some(installer),
+                notifier: Some(Arc::new(TauriNotifier(app.handle().clone()))),
             };
             let server = tauri::async_runtime::block_on(swarmdash::start(opts))?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server.url().parse()?))

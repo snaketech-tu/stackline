@@ -52,6 +52,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/c/{id}/logs", get(logs))
         .route("/c/{id}/logs/export", get(export))
         .route("/c/{id}/errors", get(errors))
+        .route("/c/{id}/service", get(service_details))
+        .route("/alerts", get(alerts))
+        .route("/alerts/test", post(test_alert))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/store", get(store_stats))
         .route("/store/clear", post(clear_store))
@@ -238,6 +241,32 @@ async fn errors(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError>
     Ok(Json(json!(s)))
 }
 
+#[derive(Deserialize)]
+struct ServiceParams {
+    /// The full service name.
+    name: String,
+}
+
+async fn service_details(st: St, Path(id): Path<String>, Query(p): Query<ServiceParams>) -> Result<Json<Value>, ApiError> {
+    let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
+    let d = rt.details(&p.name).await?;
+    d.map(|d| Json(json!(d))).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("{} is not running here.", p.name)))
+}
+
+async fn alerts(st: St) -> Json<Value> {
+    Json(json!({ "alerts": st.manager.alerts.list(), "native": st.manager.alerts.native() }))
+}
+
+/// Shows a sample notification, so people can check that alerts reach them.
+async fn test_alert(st: St) -> Json<Value> {
+    let s = st.manager.config().settings;
+    let native = st.manager.alerts.send(
+        "Errors on your server",
+        &format!("This is how swarmdash tells you about {} or more errors in {} minutes.", s.alert_threshold, s.alert_window_mins),
+    );
+    Json(json!({ "native": native }))
+}
+
 async fn export(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> Result<Response, ApiError> {
     st.manager.runtime(&id).ok_or_else(not_found)?;
     let (format, ext, mime) = match p.format.as_deref().unwrap_or("log") {
@@ -298,6 +327,12 @@ async fn put_settings(st: St, Json(s): Json<Settings>) -> Result<Json<Settings>,
     }
     if !(2..=600).contains(&s.refresh_secs) || !(1..=600).contains(&s.log_poll_secs) {
         return Err(bad("Refresh intervals must be between 2 and 600 seconds."));
+    }
+    if !(5..=15).contains(&s.alert_window_mins) {
+        return Err(bad("Count errors over 5 to 15 minutes."));
+    }
+    if !(1..=1_000_000).contains(&s.alert_threshold) {
+        return Err(bad("The alert threshold must be at least 1 error."));
     }
     let c = st.manager.update_config(|c| c.settings = s)?;
     Ok(Json(c.settings))

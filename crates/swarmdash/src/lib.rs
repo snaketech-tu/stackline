@@ -9,6 +9,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
+use swarmdash_core::alerts::Notifier;
 use swarmdash_core::config::Paths;
 use swarmdash_core::runtime::Manager;
 use update::{DesktopInstaller, Updater};
@@ -20,6 +21,8 @@ pub struct ServeOptions {
     pub desktop: bool,
     /// The desktop app's updater; without one, swarmdash updates its own executable.
     pub installer: Option<Arc<dyn DesktopInstaller>>,
+    /// The desktop app's native notifications; without them the page shows alerts.
+    pub notifier: Option<Arc<dyn Notifier>>,
 }
 
 pub struct Server {
@@ -47,6 +50,9 @@ pub struct AppState {
 /// Binds the server and starts it in the background.
 pub async fn start(opts: ServeOptions) -> Result<Server> {
     let manager = Manager::new(opts.paths)?;
+    if let Some(n) = opts.notifier {
+        manager.alerts.set_notifier(n);
+    }
     // After an update the new process keeps the old token, so open tabs stay signed in.
     let restarted = std::env::var_os("SWARMDASH_RESTARTED").is_some();
     let token = std::env::var("SWARMDASH_TOKEN")

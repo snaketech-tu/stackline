@@ -55,6 +55,12 @@ pub struct Settings {
     pub collect_stats: bool,
     /// Look for a newer release on startup.
     pub check_updates: bool,
+    /// Send a notification when a connection logs too many errors.
+    pub alert_enabled: bool,
+    /// The window the errors are counted in, 5 to 15 minutes.
+    pub alert_window_mins: u32,
+    /// Notify when the window holds at least this many errors.
+    pub alert_threshold: u32,
 }
 
 impl Default for Settings {
@@ -67,6 +73,9 @@ impl Default for Settings {
             log_poll_secs: 3,
             collect_stats: true,
             check_updates: true,
+            alert_enabled: false,
+            alert_window_mins: 10,
+            alert_threshold: 20,
         }
     }
 }

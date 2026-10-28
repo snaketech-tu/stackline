@@ -48,7 +48,7 @@ async fn main() -> Result<()> {
         None => (7070, IpAddr::from([127, 0, 0, 1]), false, None),
     };
     let paths = data_dir.as_deref().map(Paths::in_dir).unwrap_or_else(Paths::default_paths);
-    let server = start(ServeOptions { addr: SocketAddr::new(host, port), paths, desktop: false, installer: None }).await?;
+    let server = start(ServeOptions { addr: SocketAddr::new(host, port), paths, desktop: false, installer: None, notifier: None }).await?;
     let url = server.url();
     if restarted {
         println!("swarmdash {} is running at {url}", env!("CARGO_PKG_VERSION"));

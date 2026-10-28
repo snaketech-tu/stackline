@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow};
 use serde::Serialize;
 use tokio::task::JoinHandle;
 
+use crate::alerts::Alerts;
 use crate::collector::Collector;
 use crate::config::{AppConfig, ConnectionConfig, ConnectionKind, Paths, Settings};
 use crate::docker::ssh::SshTunnel;
@@ -71,6 +72,17 @@ impl Runtime {
 
     pub fn state(&self) -> ConnState {
         self.state.read().unwrap().clone()
+    }
+
+    /// Reads the full configuration of a service by its full name.
+    pub async fn details(&self, name: &str) -> Result<Option<crate::details::ServiceDetails>> {
+        let Some(snap) = self.snapshot() else { return Ok(None) };
+        let Some((svc, kind)) = snap.stacks.iter().find_map(|st| st.services.iter().find(|s| s.full_name == name).map(|s| (s, st.kind)))
+        else {
+            return Ok(None);
+        };
+        let client = self.client().await?;
+        Ok(Some(crate::details::fetch(&client, svc, kind).await?))
     }
 
     /// Returns a working client, (re)opening the SSH tunnel when needed.
@@ -181,6 +193,7 @@ pub struct Manager {
     paths: Paths,
     config: RwLock<AppConfig>,
     pub store: Arc<Store>,
+    pub alerts: Alerts,
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
 }
 
@@ -188,8 +201,15 @@ impl Manager {
     pub fn new(paths: Paths) -> Result<Arc<Manager>> {
         let config = AppConfig::load(&paths.config)?;
         let store = Arc::new(Store::open(&paths.store)?);
-        let m = Arc::new(Manager { paths, config: RwLock::new(config), store, runtimes: Mutex::new(HashMap::new()) });
+        let m = Arc::new(Manager {
+            paths,
+            config: RwLock::new(config),
+            store,
+            alerts: Alerts::default(),
+            runtimes: Mutex::new(HashMap::new()),
+        });
         m.clone().spawn_retention();
+        m.clone().spawn_alerts();
         Ok(m)
     }
 
@@ -267,6 +287,17 @@ impl Manager {
                 let settings = m.config().settings;
                 let snap = r.snapshot();
                 if let (Some(snap), Ok(client)) = (snap, r.client().await) {
+                    // Lines stored under this connection must come from the host it reaches now.
+                    if let Some(identity) = snap.identity() {
+                        match m.store.bind_host(&r.cfg.id, &identity) {
+                            Ok(true) => {
+                                tracing::info!("{} now reaches another host; its stored logs were cleared", r.cfg.name);
+                                collector = Collector::new(&r.cfg.id, m.store.clone());
+                            }
+                            Ok(false) => {}
+                            Err(e) => tracing::warn!("could not check the host of {}: {e:#}", r.cfg.name),
+                        }
+                    }
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
                     let report = collector.poll(&client, snap.log_sources(), retention).await;
                     let mut st = r.state.write().unwrap();
@@ -277,6 +308,31 @@ impl Manager {
             }
         });
         rt.tasks.lock().unwrap().extend([state_task, log_task]);
+    }
+
+    /// Checks the error rate of every opened connection every 15 seconds.
+    fn spawn_alerts(self: Arc<Self>) {
+        tokio::spawn(async move {
+            loop {
+                let cfg = self.config();
+                let s = cfg.settings;
+                let open: Vec<String> = if s.alert_enabled { self.runtimes.lock().unwrap().keys().cloned().collect() } else { vec![] };
+                self.alerts.retain(&open);
+                for id in open {
+                    let name = cfg.connections.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or_else(|| id.clone());
+                    let now = chrono::Utc::now().timestamp_micros();
+                    let from = now - s.alert_window_mins.clamp(1, 60) as i64 * 60_000_000;
+                    let store = self.store.clone();
+                    let conn = id.clone();
+                    match tokio::task::spawn_blocking(move || store.error_rate(&conn, from, now)).await {
+                        Ok(Ok(rate)) => self.alerts.update(&id, &name, rate, &s, now / 1000),
+                        Ok(Err(e)) => tracing::warn!("could not count the errors of {name}: {e:#}"),
+                        Err(_) => {}
+                    }
+                }
+                tokio::time::sleep(Duration::from_secs(15)).await;
+            }
+        });
     }
 
     fn spawn_retention(self: Arc<Self>) {

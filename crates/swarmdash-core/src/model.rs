@@ -37,6 +37,10 @@ pub struct Snapshot {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Host {
+    /// The Docker engine's ID; stays the same as long as the host does.
+    pub id: String,
+    /// The swarm's cluster ID when connected to a manager.
+    pub cluster_id: Option<String>,
     pub name: String,
     pub os: String,
     pub kernel: String,
@@ -146,6 +150,16 @@ pub struct LogSource {
 }
 
 impl Snapshot {
+    /// What the logs of this connection belong to: the swarm, or the single host.
+    /// When it changes, the connection now points somewhere else.
+    pub fn identity(&self) -> Option<String> {
+        match (&self.host.cluster_id, self.host.id.is_empty()) {
+            (Some(c), _) if !c.is_empty() => Some(format!("swarm:{c}")),
+            (_, false) => Some(format!("engine:{}", self.host.id)),
+            _ => None,
+        }
+    }
+
     pub fn log_sources(&self) -> Vec<LogSource> {
         let local_node = self.nodes.iter().find(|n| n.is_local).map(|n| n.hostname.clone());
         let mut out = Vec::new();

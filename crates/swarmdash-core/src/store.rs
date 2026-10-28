@@ -53,6 +53,7 @@ CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
 END;
 CREATE TABLE IF NOT EXISTS patterns (conn TEXT NOT NULL, fp TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (conn, fp));
 CREATE TABLE IF NOT EXISTS cursors (conn TEXT NOT NULL, source TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (conn, source));
+CREATE TABLE IF NOT EXISTS hosts (conn TEXT PRIMARY KEY, identity TEXT NOT NULL);
 "#;
 
 /// Filters shared by queries and exports. Times are Unix microseconds.
@@ -304,6 +305,16 @@ pub struct NewGroup {
     /// µs
     pub first: i64,
     pub sample: String,
+}
+
+/// Errors of one connection in a recent window, for the error-rate alert.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ErrorRate {
+    pub count: u64,
+    /// The most frequent error of the window and the service it came from.
+    pub top: Option<String>,
+    pub top_service: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -602,6 +613,63 @@ impl Store {
         Ok(deleted)
     }
 
+    /// Counts the error entries of a connection in `[from, to)` (µs).
+    pub fn error_rate(&self, conn: &str, from: i64, to: i64) -> Result<ErrorRate> {
+        let db = self.db.lock().unwrap();
+        let err = Level::Error.as_i64();
+        let count: u64 = db.query_row(
+            "SELECT COUNT(*) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4",
+            params![conn, from, to, err],
+            |r| r.get(0),
+        )?;
+        let mut rate = ErrorRate { count, ..Default::default() };
+        if count == 0 {
+            return Ok(rate);
+        }
+        let top: Option<(String, String, i64)> = db
+            .query_row(
+                "SELECT fp, service, MAX(id) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL
+                 GROUP BY fp ORDER BY COUNT(*) DESC LIMIT 1",
+                params![conn, from, to, err],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()?;
+        if let Some((fp, service, id)) = top {
+            let pattern: Option<String> =
+                db.query_row("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2", params![conn, fp], |r| r.get(0)).optional()?;
+            let text = match pattern.filter(|p| !p.is_empty()) {
+                Some(p) => p,
+                None => db.query_row("SELECT text FROM entries WHERE id = ?1", params![id], |r| r.get::<_, String>(0))?,
+            };
+            rate.top = Some(text.lines().next().unwrap_or("").chars().take(200).collect());
+            rate.top_service = Some(service);
+        }
+        Ok(rate)
+    }
+
+    /// Remembers which host or swarm a connection's logs come from. When a
+    /// connection now reaches a different one (its address was edited, or an
+    /// alias points elsewhere), the old lines are deleted so the two never mix.
+    /// Returns true when lines were deleted.
+    pub fn bind_host(&self, conn: &str, identity: &str) -> Result<bool> {
+        let db = self.db.lock().unwrap();
+        let known: Option<String> = db.query_row("SELECT identity FROM hosts WHERE conn = ?1", params![conn], |r| r.get(0)).optional()?;
+        if known.as_deref() == Some(identity) {
+            return Ok(false);
+        }
+        let changed = known.is_some();
+        if changed {
+            db.execute("DELETE FROM entries WHERE conn = ?1", params![conn])?;
+            db.execute("DELETE FROM patterns WHERE conn = ?1", params![conn])?;
+            db.execute("DELETE FROM cursors WHERE conn = ?1", params![conn])?;
+        }
+        db.execute(
+            "INSERT INTO hosts (conn, identity) VALUES (?1, ?2) ON CONFLICT (conn) DO UPDATE SET identity = excluded.identity",
+            params![conn, identity],
+        )?;
+        Ok(changed)
+    }
+
     pub fn stats(&self) -> Result<StoreStats> {
         let db = self.db.lock().unwrap();
         let (entries, oldest) = db.query_row("SELECT COUNT(*), MIN(ts) FROM entries", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -615,8 +683,9 @@ impl Store {
                 db.execute("DELETE FROM entries WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM patterns WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM cursors WHERE conn = ?1", params![c])?;
+                db.execute("DELETE FROM hosts WHERE conn = ?1", params![c])?;
             }
-            None => db.execute_batch("DELETE FROM entries; DELETE FROM patterns; DELETE FROM cursors;")?,
+            None => db.execute_batch("DELETE FROM entries; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
         }
         db.execute_batch("PRAGMA incremental_vacuum;")?;
         Ok(())
@@ -771,5 +840,55 @@ mod tests {
         // Less than an hour of history: nothing counts as new yet.
         store.insert("c2", &s1, &entries(&[(now - 10 * min, old), (now - 4 * min, fresh)])).unwrap();
         assert!(store.error_summary("c2", now).unwrap().new_groups.is_empty());
+    }
+
+    #[test]
+    fn a_connection_that_reaches_another_host_drops_the_old_lines() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let s1 = src("shop_api", "1");
+        store.insert("c1", &s1, &entries(&[(now - 1_000_000, "2026-10-27 ERROR boom")])).unwrap();
+        store.insert("c2", &s1, &entries(&[(now - 1_000_000, "2026-10-27 ERROR boom")])).unwrap();
+        store.set_cursor("c1", &s1.key, now).unwrap();
+        let all = LogFilter { from: 0, to: now, ..Default::default() };
+
+        // The first host seen keeps what is stored.
+        assert!(!store.bind_host("c1", "engine:A").unwrap());
+        assert!(!store.bind_host("c1", "engine:A").unwrap());
+        assert_eq!(store.query("c1", &all, 1, 10).unwrap().total, 1);
+
+        // Another host under the same connection: its lines start from scratch.
+        assert!(store.bind_host("c1", "engine:B").unwrap());
+        assert_eq!(store.query("c1", &all, 1, 10).unwrap().total, 0);
+        assert_eq!(store.cursor("c1", &s1.key).unwrap(), None);
+        assert_eq!(store.query("c2", &all, 1, 10).unwrap().total, 1, "other connections are untouched");
+    }
+
+    #[test]
+    fn error_rate_counts_the_window_and_names_the_top_error() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let min = 60_000_000i64;
+        let s1 = src("shop_api", "1");
+        let a = "2026-10-27 ERROR Cannot connect to redis:6379";
+        let b = "2026-10-27 ERROR Upstream timed out after 5000ms";
+        store
+            .insert(
+                "c1",
+                &s1,
+                &entries(&[
+                    (now - 30 * min, a),
+                    (now - 4 * min, a),
+                    (now - 3 * min, b),
+                    (now - 2 * min, a),
+                    (now - min, "2026-10-27 INFO ok"),
+                ]),
+            )
+            .unwrap();
+        let r = store.error_rate("c1", now - 5 * min, now).unwrap();
+        assert_eq!(r.count, 3);
+        assert!(r.top.as_deref().unwrap_or("").contains("redis"), "{r:?}");
+        assert_eq!(r.top_service.as_deref(), Some("shop_api"));
+        assert_eq!(store.error_rate("c1", now - min / 2, now).unwrap().count, 0);
     }
 }
