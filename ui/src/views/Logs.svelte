@@ -238,7 +238,7 @@
     </span>
     {#if loading}<span class="spinner" style="width:12px;height:12px"></span>{/if}
     <span class="pill ok hide-sm" title="Logs are collected per replica and kept on this computer" style="font-size:11.5px">
-      <span class="dot"></span>Local store · {app.settings?.retentionDays ?? 7} days{#if stats} · {bytes(stats.bytes)}{/if}{#if res?.syncedAt} · synced {ago(res.syncedAt, app.now)}{/if}
+      <span class="dot"></span>Local store · {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'}{#if stats} · {bytes(stats.bytes)}{/if}{#if res?.syncedAt} · synced {ago(res.syncedAt, app.now)}{/if}
     </span>
     <span class="spacer"></span>
     <div class="legend">

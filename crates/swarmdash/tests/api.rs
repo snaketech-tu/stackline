@@ -110,7 +110,7 @@ async fn the_link_with_the_token_signs_the_browser_in() {
 async fn settings_are_checked_before_they_are_saved() {
     let app = app();
     let (_, mut s) = send(&app, req("GET", "/api/settings", None)).await;
-    assert_eq!(s["retentionDays"], 7);
+    assert_eq!(s["retentionDays"], 2);
 
     s["retentionDays"] = json!(0);
     let (status, body) = send(&app, req("PUT", "/api/settings", Some(s.clone()))).await;

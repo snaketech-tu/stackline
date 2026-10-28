@@ -3,6 +3,11 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## Unreleased
+
+### Changed
+- New installs keep logs for 2 days, in at most 1 GB, instead of 7 days and 5 GB. Debugging is mostly about the last hours, and a week of every service of a big stack costs a lot of disk and a long first read. Existing installs keep their settings. Preferences now also offer 1 and 2 days and 512 MB
+
 ## 0.4.0
 
 See when and why containers crashed: crashes and restarts on the time graphs with the log lines just before, links to any Logs view, and many small debugging fixes.
