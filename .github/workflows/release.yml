@@ -1,48 +1,107 @@
 name: Release
 
-# Push a tag like v0.2.0 (or publish a release with a new tag on the GitHub
-# website) to build and publish a release. The release stays a
-# draft until every download is uploaded, so update checks never see a
-# release with missing files.
+# A release starts in one of three ways:
+# - a change to the version in Cargo.toml reaches main (usually by merging a
+#   pull request). The workflow tags that commit and releases it.
+# - "Run workflow" on the Actions tab releases the version that Cargo.toml on
+#   main names. If that version was released before, it is built again.
+# - a tag like v0.2.0 is pushed, or a release with a new tag is published on
+#   the GitHub website.
+# The release stays a draft until every download is uploaded, so update
+# checks never see a release with missing files.
 
 on:
   push:
+    branches: [main]
+    paths: [Cargo.toml]
     tags: ['v*']
+  workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  prepare:
+  # Which tag to release, and whether it exists yet. A push to main whose
+  # version already has a tag releases nothing.
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      ref: ${{ steps.v.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "ref=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          v=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          [ -n "$v" ] || { echo "::error::No version in [workspace.package] of Cargo.toml"; exit 1; }
+          tag="v$v"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" > /dev/null 2>&1; then
+            if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ]; then
+              echo "::notice::$tag is already released. Change the version in Cargo.toml to release again."
+              exit 0
+            fi
+            echo "ref=$tag" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  prepare:
+    needs: version
+    if: needs.version.outputs.tag != ''
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     outputs:
       release_id: ${{ steps.create.outputs.result }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.ref }}
       - name: Check version and signing key
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
-          v="${GITHUB_REF_NAME#v}"
-          grep -q "^version = \"$v\"" Cargo.toml || { echo "::error::Cargo.toml has a different version than the tag $GITHUB_REF_NAME"; exit 1; }
+          v="${TAG#v}"
+          grep -q "^version = \"$v\"" Cargo.toml || { echo "::error::Cargo.toml has a different version than the tag $TAG"; exit 1; }
           [ -s crates/swarmdash/updater.pub ] || { echo "::error::crates/swarmdash/updater.pub is empty. See RELEASING.md"; exit 1; }
           [ "$(jq -r .plugins.updater.pubkey desktop/src-tauri/tauri.conf.json)" = "$(tr -d '\r\n' < crates/swarmdash/updater.pub)" ] || { echo "::error::plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json differs from crates/swarmdash/updater.pub"; exit 1; }
           [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "::error::The TAURI_SIGNING_PRIVATE_KEY secret is missing. See RELEASING.md"; exit 1; }
       - name: Release notes from CHANGELOG.md
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${TAG#v}"
           awk -v v="$v" '/^## /{p = ($2 == v)} p && !/^## /' CHANGELOG.md | sed -e '/./,$!d' > notes.md
           [ -s notes.md ] || { echo "::error::CHANGELOG.md has no section for $v"; exit 1; }
           cat notes.md
+      # Checks pass, so tag the commit. A tag made with the workflow's own
+      # token does not start this workflow a second time.
+      - name: Create tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" > /dev/null 2>&1; then
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$TAG" -f sha="$(git rev-parse HEAD)" > /dev/null
+            echo "Tagged $(git rev-parse --short HEAD) as $TAG"
+          fi
       - name: Create draft release
         id: create
         uses: actions/github-script@v9
         with:
           script: |
-            const tag = context.ref.replace('refs/tags/', '')
+            const tag = process.env.TAG
             const release = {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -67,7 +126,7 @@ jobs:
   # Single binaries for `swarmdash serve`. Each one is signed so that
   # `swarmdash serve` can verify it before replacing itself.
   binaries:
-    needs: prepare
+    needs: [version, prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -80,6 +139,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -98,6 +159,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -106,11 +168,11 @@ jobs:
           name="swarmdash-${{ matrix.target }}$ext"
           cp "target/${{ matrix.target }}/release/swarmdash$ext" "$name"
           npx --yes @tauri-apps/cli@2 signer sign "$name"
-          gh release upload "$GITHUB_REF_NAME" "$name" "$name.sig" --clobber
+          gh release upload "$TAG" "$name" "$name.sig" --clobber
 
   # Desktop installers, plus latest.json for the desktop app's updater.
   desktop:
-    needs: prepare
+    needs: [version, prepare]
     strategy:
       fail-fast: false
       matrix:
@@ -121,6 +183,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.tag }}
       - if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -148,9 +212,10 @@ jobs:
           args: ${{ matrix.args }}
 
   publish:
-    needs: [binaries, desktop]
+    needs: [version, binaries, desktop]
     runs-on: ubuntu-latest
     steps:
-      - run: gh release edit "$GITHUB_REF_NAME" --draft=false --repo "$GITHUB_REPOSITORY"
+      - run: gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}

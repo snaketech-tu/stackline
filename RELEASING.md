@@ -1,9 +1,9 @@
 # Releasing swarmdash
 
-Releases are built by GitHub Actions when a tag `v*` is pushed
-(`.github/workflows/release.yml`). The workflow creates a draft release,
-uploads the desktop installers and the single binaries, and publishes the
-release once every file is there.
+Releases are built by GitHub Actions (`.github/workflows/release.yml`). The
+workflow tags the commit, creates a draft release, uploads the desktop
+installers and the single binaries, and publishes the release once every
+file is there.
 
 ## One-time setup: the update signing key
 
@@ -33,23 +33,37 @@ next version by hand.
 
 ## Every release
 
-1. Set the new version in the root `Cargo.toml` (`[workspace.package]`). The
-   desktop app and the binaries take their version from there.
-2. Add a `## <version>` section at the top of `CHANGELOG.md`. It becomes the
-   release notes and is what users see in the update dialog.
-3. Commit, then tag and push:
+1. In the pull request that holds the changes, set the new version in the
+   root `Cargo.toml` (`[workspace.package]`). The desktop app and the
+   binaries take their version from there.
+2. In the same pull request, add a `## <version>` section at the top of
+   `CHANGELOG.md`. It becomes the release notes and is what users see in the
+   update dialog.
+3. Merge the pull request. That is all: when a new version reaches `main`,
+   the release workflow tags the merge commit (for example `v0.2.0`) and
+   publishes the release. Follow it on the **Actions** tab.
 
-   ```sh
-   git tag v0.2.0
-   git push origin main v0.2.0
-   ```
+A pull request that does not change the version releases nothing.
 
-   Without a terminal, use the GitHub website instead: **Releases → Draft a
-   new release**, type the new tag (for example `v0.2.0`), choose
-   **Create new tag on publish** with target `main`, and click **Publish
-   release**. Title and notes can stay empty. The workflow turns the release
-   back into a draft, fills in the notes from `CHANGELOG.md`, uploads the
-   downloads and publishes it again.
+### Other ways to start a release
+
+- **Run workflow** on the **Actions** tab (workflow *Release*, branch `main`)
+  releases the version that `Cargo.toml` on `main` names. Use it when the
+  automatic run failed, for example because a secret was missing. If that
+  version already has a tag, the workflow builds that tag again and replaces
+  the downloads of its release.
+- Push a tag yourself:
+
+  ```sh
+  git tag v0.2.0
+  git push origin v0.2.0
+  ```
+
+- On the GitHub website: **Releases → Draft a new release**, type the new tag
+  (for example `v0.2.0`), choose **Create new tag on publish** with target
+  `main`, and click **Publish release**. Title and notes can stay empty. The
+  workflow turns the release back into a draft, fills in the notes from
+  `CHANGELOG.md`, uploads the downloads and publishes it again.
 
 The release workflow stops early if the tag and `Cargo.toml` disagree, if the
 changelog has no section for the version, or if the signing key is missing.
