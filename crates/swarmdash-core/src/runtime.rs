@@ -306,7 +306,9 @@ impl Manager {
                         }
                     }
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
-                    let report = collector.poll(&client, snap.log_sources(), retention).await;
+                    let collect = m.config().collect.remove(&r.cfg.id).unwrap_or_default();
+                    let sources = snap.log_sources().into_iter().filter(|s| collect.wants(&s.service)).collect();
+                    let report = collector.poll(&client, sources, retention).await;
                     let mut st = r.state.write().unwrap();
                     st.logs_synced_at = Some(chrono::Utc::now().timestamp_millis());
                     st.log_errors = report.errors;
@@ -342,6 +344,32 @@ impl Manager {
         });
     }
 
+    /// Stops or resumes collecting services of a connection. Services that are
+    /// collected again start from now, instead of reading everything they
+    /// logged in between.
+    pub fn set_collect(&self, id: &str, next: crate::config::Collect) -> Result<()> {
+        let mut before = None;
+        self.update_config(|c| {
+            before = Some(c.collect.get(id).cloned().unwrap_or_default());
+            if next == crate::config::Collect::default() {
+                c.collect.remove(id);
+            } else {
+                c.collect.insert(id.to_string(), next.clone());
+            }
+        })?;
+        let before = before.unwrap_or_default();
+        let rt = self.runtimes.lock().unwrap().get(id).cloned();
+        if let Some(snap) = rt.and_then(|r| r.snapshot()) {
+            let now = chrono::Utc::now().timestamp_micros();
+            for src in snap.log_sources() {
+                if !before.wants(&src.service) && next.wants(&src.service) {
+                    self.store.set_cursor(id, &src.key, now)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn spawn_retention(self: Arc<Self>) {
         tokio::spawn(async move {
             loop {
@@ -349,7 +377,8 @@ impl Manager {
                 let before = chrono::Utc::now().timestamp_micros() - s.retention_days.max(1) as i64 * 86_400_000_000;
                 let store = self.store.clone();
                 let _ = tokio::task::spawn_blocking(move || store.retain(before, s.max_store_mb * 1024 * 1024)).await;
-                tokio::time::sleep(Duration::from_secs(3600)).await;
+                // Every minute: a host with chatty services can write a lot in an hour.
+                tokio::time::sleep(Duration::from_secs(60)).await;
             }
         });
     }

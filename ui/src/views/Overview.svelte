@@ -95,7 +95,7 @@
         title: `<b>New error</b> in ${esc(g.service)}`,
         pill: ['warn', `new · ${g.count}×`],
         why: g.pattern || firstLine(g.sample),
-        acts: [{ label: 'Show', run: () => app.showGroup(g.fp) }],
+        acts: [{ label: 'Show', run: () => app.showGroup(g.fp, [g.service]) }],
       })
     }
     if (err1) {
@@ -103,7 +103,7 @@
         sev: 'err',
         title: `<b>${err1}</b> ${err1 === 1 ? 'error' : 'errors'} in the last hour`,
         why: top ? `Most frequent: ${top.pattern.slice(0, 140)} (${top.count}×${top.services.length ? ', ' + top.services.join(', ') : ''})` : 'Open the logs to see them grouped',
-        acts: [{ label: 'Errors', run: errorsOnly }, ...(top ? [{ label: 'Top group', run: () => app.showGroup(top!.fp), ghost: true }] : [])],
+        acts: [{ label: 'Errors', run: errorsOnly }, ...(top ? [{ label: 'Top group', run: () => app.showGroup(top!.fp, top!.services), ghost: true }] : [])],
       })
     }
     for (const w of snap.warnings) out.push({ sev: 'warn', title: esc(w), why: '', acts: [] })

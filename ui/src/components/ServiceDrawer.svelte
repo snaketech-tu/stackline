@@ -12,6 +12,7 @@
   import Icon from './Icon.svelte'
   import LogRow from './LogRow.svelte'
   import PinButton from './PinButton.svelte'
+  import CollectSwitch from './CollectSwitch.svelte'
   import Spark from './Spark.svelte'
 
   let { key, tab }: { key: string; tab: ServiceTab } = $props()
@@ -172,9 +173,20 @@
   {#snippet foot()}
     <span>Read-only. Nothing here can restart or change this service.</span>
     <span class="spacer"></span>
+    {#if s}<span class="toggle" title="Read and store the logs of this service">Collect logs<CollectSwitch names={[s.fullName]} label={s.fullName} /></span>{/if}
     {#if s}<button class="btn pri sm" onclick={() => app.showLogs([s!.fullName])}><Icon name="external" size={13} />Open in Logs</button>{/if}
   {/snippet}
 
+  {#if s && tab !== 'overview' && !app.collects(s.fullName)}
+    <div class="callout info">
+      <div class="h"><Icon name="logs" size={14} />The logs of this service are not collected</div>
+      <span class="muted" style="font-size:12.5px">swarmdash does not read new lines from it. {lines?.result.total ? 'The lines below were stored before.' : ''}</span>
+      <div style="display:flex;gap:6px;flex-wrap:wrap">
+        <button class="btn sm" onclick={() => app.setCollects([s!.fullName], true)}>Collect from now on</button>
+        {#if lines?.result.total}<button class="btn ghost sm" onclick={() => app.clearService(s!.fullName).catch((e) => app.notify(app.describe(e), 'err'))}>Delete stored lines</button>{/if}
+      </div>
+    </div>
+  {/if}
   {#if !s}
     <div class="empty">This service is no longer running on {app.active?.name}.</div>
   {:else if tab === 'overview'}
@@ -364,7 +376,7 @@
         <span class="muted emeta">{g.exc ? 'exception' : g.level === 'WARN' ? 'warning' : 'log error'} · first {ago(g.first / 1000, app.now)} · last {ago(g.last / 1000, app.now)} · {g.sources} {g.sources === 1 ? 'container' : 'containers'}</span>
         <pre class="trace" class:plain={g.level !== 'ERROR'}>{#each g.sample.split('\n') as l, i (i)}{#if i === 0}<b>{l}</b>{:else}{'\n'}<span class="fr">{l}</span>{/if}{/each}</pre>
         <div class="eacts">
-          <button class="btn sm" onclick={() => { app.showGroup(g.fp); app.logs.sources.add(s!.fullName) }}>Show all {g.count.toLocaleString()} in Logs</button>
+          <button class="btn sm" onclick={() => { app.showLogs([s!.fullName]); app.logs.group = g.fp }}>Show all {g.count.toLocaleString()} in Logs</button>
           <button class="btn ghost sm" onclick={() => app.copy(g.sample)}><Icon name="copy" size={13} />Copy {g.exc ? 'stack trace' : 'message'}</button>
         </div>
       </div>

@@ -30,6 +30,17 @@ its GitHub release, and swarmdash shows it in the update dialog.
 - The connection menu and other dropdowns are no longer drawn under the overview cards
 - The Errors tab of a service shows long messages in full at a readable size, and large counts are no longer cut off
 
+### Disk space and log collection
+- The store size limit is enforced: swarmdash checks it every minute instead of every hour, deletes the oldest lines down to about 90% of the limit, and gives the space back to the disk. Before, deleted lines left the file at its largest size
+- Stores made by earlier versions are rebuilt once on the first start, so they can shrink. This can take a while on a large store
+- Choose whose logs are collected: **Collect** switches per service and per stack on the Stacks page, and **Only chosen** to collect nothing but the services you switch on. A service switched on again starts from that moment
+- Preferences → Local store shows the space each service takes, with a switch to stop collecting it and a button to delete its lines
+- The service panel says when its logs are not collected
+
+### Filters stay put
+- The services picked on the Logs page are kept per connection when you move around the app and after a restart. Opening the Logs page from the overview no longer clears them
+- The Stacks page keeps its filter and search text
+
 ### Alerts
 - Optional notification when a connection logs too many errors: pick 5, 10 or 15 minutes and a threshold under Preferences
 - One notification per crossing; the overview shows a banner while the rate stays high

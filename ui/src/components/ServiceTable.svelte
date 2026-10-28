@@ -8,16 +8,19 @@
   import type { ServiceRef, Stack } from '../lib/types'
   import Icon from './Icon.svelte'
   import PinButton from './PinButton.svelte'
+  import CollectSwitch from './CollectSwitch.svelte'
 
   type Group = { name: string; kind: Stack['kind']; total: number; services: ServiceRef[] }
-  let { services = [], groups, stackCol = false, full = true }: {
+  let { services = [], groups, stackCol = false, full = true, collectCol = false }: {
     services?: ServiceRef[]; groups?: Group[]; stackCol?: boolean
     /** Show mode, image and ports too. */
     full?: boolean
+    /** Show the switches that choose whose logs are collected. */
+    collectCol?: boolean
   } = $props()
 
   const closed = new SvelteSet<string>()
-  let cols = $derived(8 + (stackCol ? 1 : 0) + (full ? 3 : 0))
+  let cols = $derived(8 + (stackCol ? 1 : 0) + (full ? 3 : 0) + (collectCol ? 1 : 0))
 
   function toggle(name: string) {
     if (closed.has(name)) closed.delete(name)
@@ -31,7 +34,7 @@
       <tr>
         <th class="pincell"><span class="sr">Pin</span></th><th>Service</th>{#if stackCol}<th>Stack</th>{/if}<th>Replicas</th>
         {#if full}<th class="hide-sm">Mode</th><th class="hide-sm">Image</th><th class="hide-sm">Ports</th>{/if}
-        <th class="hide-sm">CPU</th><th class="hide-sm">Memory</th><th>Errors 1h</th><th class="hide-sm">Updated</th><th class="actcell hide-sm"><span class="sr">Actions</span></th>
+        <th class="hide-sm">CPU</th><th class="hide-sm">Memory</th><th>Errors 1h</th>{#if collectCol}<th class="collectcell" title="Whether swarmdash collects and stores the logs of the service">Collect</th>{/if}<th class="hide-sm">Updated</th><th class="actcell hide-sm"><span class="sr">Actions</span></th>
       </tr>
     </thead>
     <tbody>
@@ -45,6 +48,7 @@
                 <span class="kind">{g.kind}</span>
                 <span class="muted hide-sm" style="font-size:12.5px">{g.services.length === g.total ? plural(g.total, 'service') : `${g.services.length} of ${g.total} services`}</span>
                 <span class="spacer"></span>
+                {#if collectCol}<span class="toggle" title="Collect the logs of every service in {g.name}"><span class="hide-sm">Whole stack</span><CollectSwitch names={g.services.map((s) => s.fullName)} label={g.name} /></span>{/if}
                 <button class="btn ghost sm" title="Stack logs for {g.name}" aria-label="Stack logs for {g.name}" onclick={() => app.showLogs([`stack:${g.name}`])}><Icon name="logs" size={14} /><span class="hide-sm">Stack logs</span></button>
               </div>
             </td>
@@ -76,6 +80,7 @@
     <td class="hide-sm mono">{pct(s.cpuPercent, 1)}</td>
     <td class="hide-sm mono">{bytes(s.memUsed)}</td>
     <td class="mono" style:color={e ? 'var(--err)' : 'var(--muted)'}>{e}</td>
+    {#if collectCol}<td class="collectcell"><CollectSwitch names={[s.fullName]} label={s.fullName} /></td>{/if}
     <td class="hide-sm muted">{s.updatedAt ? ago(s.updatedAt, app.now) : '–'}</td>
     <td class="actcell hide-sm">
       <span class="acts">

@@ -67,7 +67,10 @@ export interface LogResult {
 export interface LogResponse { result: LogResult; syncedAt: number | null; logErrors: string[] }
 export interface TestStep { label: string; ok: boolean; detail: string | null; ms: number }
 export interface StoreStats { bytes: number; entries: number; oldest: number | null }
-export interface SnapshotResponse { state: ConnState; snapshot: Snapshot | null; pins: string[] }
+export interface SnapshotResponse { state: ConnState; snapshot: Snapshot | null; pins: string[]; collect: Collect }
+/** Which services get their logs collected: all but the listed ones, or only the listed ones (full names). */
+export interface Collect { only: boolean; services: string[] }
+export interface ServiceUsage { service: string; entries: number; textBytes: number }
 export interface NewGroup { fp: string; pattern: string; count: number; service: string; first: number; sample: string }
 export interface ErrorSummary {
   byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[]

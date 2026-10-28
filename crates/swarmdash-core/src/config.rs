@@ -18,6 +18,25 @@ pub struct AppConfig {
     /// Pinned services per connection id, as `stack/service`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pins: BTreeMap<String, Vec<String>>,
+    /// Which services' logs are collected, per connection id. Missing means all.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub collect: BTreeMap<String, Collect>,
+}
+
+/// The services of one connection whose logs swarmdash reads and stores.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Collect {
+    /// Collect only `services`. Otherwise collect everything except `services`.
+    pub only: bool,
+    /// Full service names, e.g. `shop_api`.
+    pub services: Vec<String>,
+}
+
+impl Collect {
+    pub fn wants(&self, service: &str) -> bool {
+        self.services.iter().any(|s| s == service) == self.only
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +109,7 @@ impl Default for AppConfig {
             }],
             settings: Settings::default(),
             pins: BTreeMap::new(),
+            collect: BTreeMap::new(),
         }
     }
 }
@@ -180,5 +200,15 @@ mod tests {
         let back = serde_json::to_string(&c).unwrap();
         assert!(back.contains(r#""kind":"ssh""#));
         assert_eq!(new_id("Prod EU!", &["prod-eu".into()]), "prod-eu-2");
+    }
+
+    #[test]
+    fn collect_lists_exceptions_or_choices() {
+        let all = Collect::default();
+        assert!(all.wants("shop_api"));
+        let except = Collect { only: false, services: vec!["shop_debug".into()] };
+        assert!(except.wants("shop_api") && !except.wants("shop_debug"));
+        let only = Collect { only: true, services: vec!["shop_api".into()] };
+        assert!(only.wants("shop_api") && !only.wants("shop_worker"));
     }
 }

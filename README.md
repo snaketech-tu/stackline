@@ -41,6 +41,8 @@ that opens the dashboard in your browser.
   connection logs more errors than you allow within 5 to 15 minutes.
 - **Keep logs locally.** A SQLite store retains seven days by default. Searches
   use the local store; collection resumes from the last stored timestamp.
+  Choose per service whose logs are collected, so chatty services do not fill
+  the disk.
 - **Inspect without changing workloads.** The Docker client only sends `GET`
   requests. swarmdash cannot start, stop, scale or remove Docker resources.
 
@@ -152,6 +154,14 @@ window with the stream. **Show more** loads older lines, up to 5,000 at once.
 Stored logs belong to the host or swarm a connection reaches. When you point a
 connection at a different host, its old lines are deleted so the two never mix.
 
+By default swarmdash collects the logs of every service. On **Stacks &
+services**, the **Collect** switches turn collection off for single services or
+whole stacks, and **Only chosen** collects nothing but the services you switch
+on (it starts from your pinned services). A service that is switched on again
+is read from that moment, without fetching what it logged in between. The
+filters you pick on the Logs and Stacks pages stay as they are when you move
+around the app or restart it.
+
 Collection depends on the logs Docker exposes through its API. swarmdash can
 retain logs it has collected, but cannot recover logs Docker already removed
 before collection.
@@ -160,7 +170,11 @@ before collection.
 
 Under **Preferences**, adjust log retention, the store size limit, refresh
 intervals, CPU and memory collection, theme, and update checks. The defaults
-are seven days of logs and a 5 GiB store size limit.
+are seven days of logs and a 5 GiB store size limit. swarmdash checks both
+every minute: when the store is over the limit it deletes the oldest lines
+until it is at about 90% of it, and the file on disk shrinks with it. The
+**Local store** section shows how much each service of the selected connection
+takes, with a switch to stop collecting it and a button to delete its lines.
 
 **Alerts** are off until you switch them on. swarmdash then counts the errors
 of every connection opened since it started, over the last 5, 10 or 15 minutes,

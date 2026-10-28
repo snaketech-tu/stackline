@@ -2,14 +2,36 @@
   import { app, type Theme } from '../lib/state.svelte'
   import { api, post } from '../lib/api'
   import { ago, bytes } from '../lib/format'
-  import type { Settings, StoreStats } from '../lib/types'
+  import type { ServiceUsage, Settings, StoreStats } from '../lib/types'
+  import CollectSwitch from '../components/CollectSwitch.svelte'
   import Icon from '../components/Icon.svelte'
 
   let stats = $state<StoreStats | null>(null)
   let confirmClear = $state(false)
 
+  // What takes the space: stored text per service of the active connection.
+  let usage = $state<ServiceUsage[] | null>(null)
+  let allUsage = $state(false)
+  let confirmSvc = $state<string | null>(null)
+  let usageTotal = $derived(usage?.reduce((a, u) => a + u.textBytes, 0) ?? 0)
+  const known = (name: string) => app.services.some((s) => s.fullName === name)
+
   async function loadStats() {
-    stats = await api<StoreStats>('/store').catch(() => null)
+    const id = app.activeId
+    ;[stats, usage] = await Promise.all([
+      api<StoreStats>('/store').catch(() => null),
+      api<ServiceUsage[]>(`/c/${encodeURIComponent(id)}/usage`).catch(() => null),
+    ])
+  }
+
+  async function clearSvc(name: string) {
+    try {
+      await app.clearService(name)
+      confirmSvc = null
+      loadStats()
+    } catch (e) {
+      app.notify(app.describe(e), 'err')
+    }
   }
   $effect(() => {
     loadStats()
@@ -177,6 +199,33 @@
       </span>
       <span class="d mono" style="font-size:11.5px;word-break:break-all">{app.meta?.storePath}</span>
     </div>
+    {#if usage?.length}
+      <div class="usage">
+        <div class="uh"><b>Space per service on {app.active?.name}</b><span class="muted">Text of the stored lines. Switch a service off to stop collecting it; the Stacks page has the same switches.</span></div>
+        <table>
+          <thead><tr><th>Service</th><th class="num">Lines</th><th class="num">Text</th><th class="share hide-sm"><span class="sr">Share</span></th><th class="collectcell">Collect</th><th class="actcell"><span class="sr">Delete</span></th></tr></thead>
+          <tbody>
+            {#each allUsage ? usage : usage.slice(0, 8) as u (u.service)}
+              <tr>
+                <td class="mono name" title={u.service}>{u.service}</td>
+                <td class="num mono">{u.entries.toLocaleString()}</td>
+                <td class="num mono">{bytes(u.textBytes)}</td>
+                <td class="share hide-sm"><i style:width="{usageTotal ? Math.max(1, (u.textBytes / usageTotal) * 100) : 0}%"></i></td>
+                <td class="collectcell">{#if known(u.service)}<CollectSwitch names={[u.service]} label={u.service} />{:else}<span class="muted" title="Not running on this host any more">gone</span>{/if}</td>
+                <td class="actcell">
+                  {#if confirmSvc === u.service}
+                    <span class="confirm"><button class="btn danger sm" onclick={() => clearSvc(u.service)}>Delete</button><button class="btn ghost sm" onclick={() => (confirmSvc = null)}>Keep</button></span>
+                  {:else}
+                    <button class="btn ghost sm" onclick={() => (confirmSvc = u.service)}>Delete lines…</button>
+                  {/if}
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+        {#if usage.length > 8}<button class="btn ghost sm" onclick={() => (allUsage = !allUsage)}>{allUsage ? 'Show fewer' : `Show all ${usage.length} services`}</button>{/if}
+      </div>
+    {/if}
   </section>
 {:else}
   <div class="center-empty"><span class="spinner"></span></div>

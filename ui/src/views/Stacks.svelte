@@ -34,6 +34,7 @@
       }))
       .filter((g) => g.services.length),
   )
+  let collected = $derived(app.services.filter((s) => app.collects(s.fullName)).length)
   let shown = $derived(groups.reduce((a, g) => a + g.services.length, 0))
   const FILTERS: [StackFilter, string][] = [['all', 'All'], ['problems', 'Problems'], ['pinned', 'Pinned']]
 </script>
@@ -49,6 +50,10 @@
     <input placeholder="Filter by service, image or stack" bind:value={app.stackQ} autocomplete="off" spellcheck="false" />
     {#if app.stackQ}<button class="ib" style="width:22px;height:22px" onclick={() => (app.stackQ = '')} aria-label="Clear filter"><Icon name="x" size={12} /></button>{/if}
   </label>
+  <div class="seg" role="group" aria-label="Collect logs of" title="Which services swarmdash reads and stores logs for">
+    <button aria-pressed={!app.collect.only} onclick={() => app.setCollectOnly(false)}>Collect all</button>
+    <button aria-pressed={app.collect.only} onclick={() => app.setCollectOnly(true)}>Only chosen<span class="n">{collected}</span></button>
+  </div>
   <span class="muted hide-sm" style="font-size:12.5px">{shown === app.services.length ? plural(shown, 'service') : `${shown} of ${app.services.length} services`} in {plural(snap.stacks.length, 'stack')}</span>
 </div>
 
@@ -56,11 +61,17 @@
   <div class="hint" style="display:flex;gap:6px;align-items:center;padding:0 4px"><Icon name="star" size={14} /> Pin the services you care about most with the star. They stay on top here, on the overview and in the log sources.</div>
 {/if}
 
+{#if app.collect.only && !collected && app.services.length}
+  <div class="hint" style="display:flex;gap:6px;align-items:center;padding:0 4px"><Icon name="logs" size={14} /> No logs are collected right now. Switch on the services you want to follow in the Collect column.</div>
+{:else if app.collect.only || app.services.some((s) => !app.collects(s.fullName))}
+  <div class="hint" style="display:flex;gap:6px;align-items:center;padding:0 4px"><Icon name="logs" size={14} /> Logs are collected for {collected} of {plural(app.services.length, 'service')}. {app.collect.only ? 'New services are not collected until you switch them on.' : 'New services are collected.'}</div>
+{/if}
+
 {#if !snap.stacks.length}
   <div class="center-empty">No stacks or containers on this host.</div>
 {:else}
   <section class="panel">
-    {#if groups.length}<ServiceTable {groups} />{:else}
+    {#if groups.length}<ServiceTable {groups} collectCol />{:else}
       <div class="empty">
         {app.stackFilter === 'problems' ? 'Every service runs as it should.' : app.stackFilter === 'pinned' ? 'No pinned services yet. Pin one with the star.' : 'No services match.'}
         {#if needle || app.stackFilter !== 'all'}<button class="btn ghost sm" onclick={() => { app.stackQ = ''; app.stackFilter = 'all' }}>Show all</button>{/if}

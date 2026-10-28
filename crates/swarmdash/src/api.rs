@@ -10,7 +10,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use swarmdash_core::config::{ConnectionConfig, ConnectionKind, Settings, new_id};
+use swarmdash_core::config::{Collect, ConnectionConfig, ConnectionKind, Settings, new_id};
 use swarmdash_core::logs::Level;
 use swarmdash_core::runtime::test_connection;
 use swarmdash_core::store::{ExportFormat, LogFilter};
@@ -49,6 +49,9 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/connections/{id}", put(update_connection).delete(delete_connection))
         .route("/c/{id}/snapshot", get(snapshot))
         .route("/c/{id}/pins", put(put_pins))
+        .route("/c/{id}/collect", put(put_collect))
+        .route("/c/{id}/usage", get(usage))
+        .route("/c/{id}/usage/clear", post(clear_usage))
         .route("/c/{id}/logs", get(logs))
         .route("/c/{id}/logs/export", get(export))
         .route("/c/{id}/errors", get(errors))
@@ -149,8 +152,10 @@ async fn test(Json(input): Json<ConnectionInput>) -> Result<Json<Value>, ApiErro
 
 async fn snapshot(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
-    let pins = st.manager.config().pins.remove(&id).unwrap_or_default();
-    Ok(Json(json!({ "state": rt.state(), "snapshot": rt.snapshot().as_deref(), "pins": pins })))
+    let mut cfg = st.manager.config();
+    let pins = cfg.pins.remove(&id).unwrap_or_default();
+    let collect = cfg.collect.remove(&id).unwrap_or_default();
+    Ok(Json(json!({ "state": rt.state(), "snapshot": rt.snapshot().as_deref(), "pins": pins, "collect": collect })))
 }
 
 /// Replaces the pinned services of a connection. Each pin is `stack/service`.
@@ -184,6 +189,48 @@ async fn put_pins(st: St, Path(id): Path<String>, Json(pins): Json<Vec<String>>)
         return Err(not_found());
     }
     Ok(Json(clean))
+}
+
+/// Chooses which services of a connection have their logs collected.
+async fn put_collect(st: St, Path(id): Path<String>, Json(c): Json<Collect>) -> Result<Json<Collect>, ApiError> {
+    if !st.manager.config().connections.iter().any(|x| x.id == id) {
+        return Err(not_found());
+    }
+    let mut services: Vec<String> = Vec::new();
+    for s in c.services {
+        let s = s.trim().to_string();
+        if s.is_empty() || s.len() > 300 {
+            return Err(bad(format!("\"{s}\" is not a service.")));
+        }
+        if !services.contains(&s) {
+            services.push(s);
+        }
+    }
+    if services.len() > 2000 {
+        return Err(bad("Too many services."));
+    }
+    let c = Collect { only: c.only, services };
+    st.manager.set_collect(&id, c.clone())?;
+    Ok(Json(c))
+}
+
+/// Stored lines and text per service of a connection.
+async fn usage(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+    let store = st.manager.store.clone();
+    let u = tokio::task::spawn_blocking(move || store.usage(&id)).await.map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(json!(u)))
+}
+
+#[derive(Deserialize)]
+struct ClearInput {
+    service: String,
+}
+
+/// Deletes the stored lines of one service. Docker is not touched.
+async fn clear_usage(st: St, Path(id): Path<String>, Json(input): Json<ClearInput>) -> Result<Json<Value>, ApiError> {
+    let store = st.manager.store.clone();
+    let n = tokio::task::spawn_blocking(move || store.clear_service(&id, &input.service)).await.map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(json!({ "deleted": n })))
 }
 
 #[derive(Deserialize)]

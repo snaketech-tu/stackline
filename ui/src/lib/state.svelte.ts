@@ -1,10 +1,11 @@
 // App-wide state: connections, the active connection's snapshot, settings,
 // pins, update status and the current view. Components read it directly.
 
+import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
 import { ApiError, api, post, put } from './api'
 import type {
-  Alert, AlertsResponse, ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  Alert, AlertsResponse, Collect, ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
 } from './types'
 
@@ -136,13 +137,23 @@ class LogsState {
     for (const x of solo ? LEVELS : [l]) this.levels.add(x)
   }
 
+  /** Puts back the sources last picked on a connection. */
+  restoreSources(conn: string) {
+    this.sources.clear()
+    try {
+      for (const k of JSON.parse(load(`swarmdash-sources-${conn}`) ?? '[]')) if (typeof k === 'string') this.sources.add(k)
+    } catch {
+      // A damaged entry means no picked sources.
+    }
+  }
+
   toggleSource(key: string) {
     if (this.sources.has(key)) this.sources.delete(key)
     else this.sources.add(key)
   }
 
+  /** Back to the default filters. The picked sources stay: they are the services someone follows. */
   reset() {
-    this.sources.clear()
     this.levels.clear()
     LEVELS.forEach((l) => this.levels.add(l))
     this.q = ''
@@ -162,6 +173,8 @@ class AppState {
   snap = $state<Snapshot | null>(null)
   conn = $state<ConnState | null>(null)
   pins = $state<string[]>([])
+  /** Which services of the active connection have their logs collected. */
+  collect = $state<Collect>({ only: false, services: [] })
   errors = $state<ErrorSummary | null>(null)
   settings = $state<Settings | null>(null)
   update = $state<UpdateState | null>(null)
@@ -169,8 +182,8 @@ class AppState {
   drawer = $state<Drawer>(null)
   palette = $state(false)
   /** Filters of the stacks view, set from the overview too. */
-  stackFilter = $state<StackFilter>('all')
-  stackQ = $state('')
+  stackFilter = $state<StackFilter>((load('swarmdash-stack-filter') as StackFilter) || 'all')
+  stackQ = $state(load('swarmdash-stack-q') ?? '')
   theme = $state<Theme>((load('swarmdash-theme') as Theme) || 'system')
   toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null)
   /** Set when the API cannot be used at all (server gone, signed out). */
@@ -205,6 +218,21 @@ class AppState {
     !!this.update && this.update.releases.length > 0 && !['upToDate', 'idle', 'checking'].includes(this.update.phase),
   )
 
+  constructor() {
+    this.logs.restoreSources(this.activeId)
+    // Filters survive moving around the app and restarting it. Sources are kept per connection.
+    $effect.root(() => {
+      $effect(() => {
+        const v = JSON.stringify([...this.logs.sources])
+        save(`swarmdash-sources-${untrack(() => this.activeId)}`, v)
+      })
+      $effect(() => {
+        save('swarmdash-stack-filter', this.stackFilter)
+        save('swarmdash-stack-q', this.stackQ)
+      })
+    })
+  }
+
   #timer: ReturnType<typeof setTimeout> | null = null
   #toastTimer: ReturnType<typeof setTimeout> | null = null
   #seq = 0
@@ -223,7 +251,10 @@ class AppState {
       this.meta = meta
       this.connections = connections
       this.settings = settings
-      if (!connections.some((c) => c.id === this.activeId)) this.activeId = connections[0]?.id ?? 'local'
+      if (!connections.some((c) => c.id === this.activeId)) {
+        this.activeId = connections[0]?.id ?? 'local'
+        this.logs.restoreSources(this.activeId)
+      }
     } catch (e) {
       this.fatal = this.describe(e)
       return
@@ -309,8 +340,12 @@ class AppState {
     this.conn = null
     this.errors = null
     this.pins = []
+    this.collect = { only: false, services: [] }
     this.drawer = null
     this.logs.reset()
+    this.logs.restoreSources(id)
+    this.stackQ = ''
+    this.stackFilter = 'all'
     this.poll()
   }
 
@@ -328,6 +363,7 @@ class AppState {
       this.conn = res.state
       if (res.snapshot) this.snap = res.snapshot
       this.pins = res.pins
+      if (!this.#collectBusy) this.collect = res.collect ?? { only: false, services: [] }
       if (errors) this.errors = errors
       this.fatal = null
     } catch (e) {
@@ -364,6 +400,52 @@ class AppState {
     }
   }
 
+  /** True when the logs of this service (full name) are collected. */
+  collects(name: string): boolean {
+    return this.collect.services.includes(name) === this.collect.only
+  }
+
+  #collectBusy = 0
+
+  async saveCollect(next: Collect) {
+    const before = this.collect
+    this.collect = next
+    this.#collectBusy++
+    try {
+      this.collect = await put<Collect>(`/c/${encodeURIComponent(this.activeId)}/collect`, next)
+    } catch (e) {
+      this.collect = before
+      this.notify(this.describe(e), 'err')
+    } finally {
+      this.#collectBusy--
+    }
+  }
+
+  /** Switches log collection of these services (full names) on or off. */
+  setCollects(names: string[], on: boolean) {
+    const { only, services } = this.collect
+    const listed = on === only
+    const rest = services.filter((s) => !names.includes(s))
+    this.saveCollect({ only, services: listed ? [...rest, ...names] : rest })
+  }
+
+  /**
+   * Collect every service, or only chosen ones. Choosing starts from the
+   * pinned services, since those are the ones someone follows.
+   */
+  setCollectOnly(only: boolean) {
+    if (only === this.collect.only) return
+    const services = only ? this.pinnedServices.map((s) => s.fullName).filter((n) => this.collects(n)) : []
+    this.saveCollect({ only, services })
+  }
+
+  /** Deletes the stored lines of one service (full name) of the active connection. Returns how many. */
+  async clearService(name: string): Promise<number> {
+    const r = await post<{ deleted: number }>(`/c/${encodeURIComponent(this.activeId)}/usage/clear`, { service: name })
+    this.notify(`Deleted ${r.deleted.toLocaleString()} stored ${r.deleted === 1 ? 'line' : 'lines'} of ${name}.`)
+    return r.deleted
+  }
+
   /** The theme button in the top bar: system → light → dark → system. */
   cycleTheme() {
     this.setTheme(({ system: 'light', light: 'dark', dark: 'system' } as const)[this.theme])
@@ -373,10 +455,13 @@ class AppState {
     this.drawer = { kind: 'service', key, tab }
   }
 
-  /** Opens the logs view showing only these sources (full service names or `stack:<name>`). */
+  /** Opens the logs view. Given sources (full service names or `stack:<name>`) replace the picked ones. */
   showLogs(sources: string[] = [], levels?: Level[]) {
     this.logs.reset()
-    for (const s of sources) this.logs.sources.add(s)
+    if (sources.length) {
+      this.logs.sources.clear()
+      for (const s of sources) this.logs.sources.add(s)
+    }
     if (levels) {
       this.logs.levels.clear()
       levels.forEach((l) => this.logs.levels.add(l))
@@ -385,9 +470,16 @@ class AppState {
     this.go('logs')
   }
 
-  /** Opens the logs view narrowed to one error group. */
-  showGroup(fp: string) {
+  /**
+   * Opens the logs view narrowed to one error group. The picked sources stay
+   * unless none of them can show it: then the view would be empty.
+   */
+  showGroup(fp: string, services: string[] = []) {
+    const picked = [...this.logs.sources]
+    const stackOf = (name: string) => this.services.find((s) => s.fullName === name)?.stack
+    const shown = services.some((n) => picked.includes(n) || picked.includes(`stack:${stackOf(n)}`))
     this.showLogs()
+    if (picked.length && services.length && !shown) this.logs.sources.clear()
     this.logs.group = fp
   }
 

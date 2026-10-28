@@ -45,7 +45,7 @@
     }
     for (const g of groups) {
       const p = g.pattern || firstLine(g.sample)
-      out.push({ kind: 'Error', label: p, text: `${p} ${g.services.join(' ')} error`, right: `${g.count}× · ${g.services.join(', ')}`, run: () => app.showGroup(g.fp) })
+      out.push({ kind: 'Error', label: p, text: `${p} ${g.services.join(' ')} error`, right: `${g.count}× · ${g.services.join(', ')}`, run: () => app.showGroup(g.fp, g.services) })
     }
     for (const [v, label] of VIEWS) out.push({ kind: 'Page', label, text: `${label} ${v}`, right: '', run: () => app.go(v) })
     for (const c of app.connections) {

@@ -534,3 +534,21 @@ tr.editrow>td{background:var(--panel-2);padding:16px 18px}
 .ecard .eacts{display:flex;gap:8px;flex-wrap:wrap}
 .drawer .tabs{overflow-x:auto}
 .drawer .tabs button{white-space:nowrap;flex:none}
+.switch.sm{width:30px;height:18px}
+.switch.sm i::after{top:2px;left:2px;width:14px;height:14px}
+.switch.sm input:checked+i::after{transform:translateX(12px)}
+.switch.some i{background:color-mix(in srgb,var(--accent) 45%,transparent)}
+.collectcell{width:56px;text-align:center}
+.usage{display:flex;flex-direction:column;gap:8px;padding:12px 16px 14px;border-top:1px solid var(--line)}
+.usage .uh{display:flex;flex-direction:column;gap:2px;font-size:13px}
+.usage .uh .muted{font-size:12px}
+.usage table{width:100%;border-collapse:collapse;font-size:13px}
+.usage th{text-align:left;font-weight:600;color:var(--muted);font-size:12px;padding:4px 6px}
+.usage td{padding:5px 6px;border-top:1px solid var(--line);vertical-align:middle}
+.usage .num{text-align:right;white-space:nowrap}
+.usage .name{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.usage .share{width:22%;min-width:60px}
+.usage .share i{display:block;height:6px;border-radius:3px;background:var(--accent)}
+.usage .actcell{text-align:right;white-space:nowrap}
+.callout.info{background:color-mix(in srgb,var(--info) 8%,var(--panel));border-color:color-mix(in srgb,var(--info) 28%,transparent)}
+.callout.info .h{color:var(--fg)}

@@ -19,12 +19,15 @@ use crate::model::LogSource;
 
 pub struct Store {
     db: Mutex<Connection>,
+    /// The database file, to count its write-ahead log too. None in memory.
+    path: Option<std::path::PathBuf>,
 }
 
 const SCHEMA: &str = r#"
+PRAGMA auto_vacuum = INCREMENTAL;
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
-PRAGMA auto_vacuum = INCREMENTAL;
+PRAGMA journal_size_limit = 67108864;
 CREATE TABLE IF NOT EXISTS entries (
     id INTEGER PRIMARY KEY,
     conn TEXT NOT NULL,
@@ -299,6 +302,15 @@ pub struct QueryResult {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ServiceUsage {
+    pub service: String,
+    pub entries: u64,
+    /// Bytes of log text; the search index adds to this on disk.
+    pub text_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StoreStats {
     pub bytes: u64,
     pub entries: u64,
@@ -355,16 +367,16 @@ impl Store {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        Self::init(Connection::open(path)?)
+        Self::init(Connection::open(path)?, Some(path.to_path_buf()))
     }
 
     pub fn open_in_memory() -> Result<Store> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, None)
     }
 
-    fn init(db: Connection) -> Result<Store> {
+    fn init(db: Connection, path: Option<std::path::PathBuf>) -> Result<Store> {
         db.execute_batch(SCHEMA)?;
-        Ok(Store { db: Mutex::new(db) })
+        Ok(Store { db: Mutex::new(db), path })
     }
 
     pub fn insert(&self, conn: &str, src: &LogSource, entries: &[LogEntry]) -> Result<()> {
@@ -630,8 +642,10 @@ impl Store {
         Ok(n)
     }
 
-    /// Deletes entries older than `before` (µs) and the oldest entries beyond `max_bytes`.
+    /// Deletes entries older than `before` (µs) and the oldest entries beyond
+    /// `max_bytes`, then gives the space back to the system.
     pub fn retain(&self, before: i64, max_bytes: u64) -> Result<u64> {
+        const BATCH: usize = 20_000;
         let mut deleted = 0u64;
         // The lock is taken per batch, so queries and new lines get through between batches.
         loop {
@@ -639,28 +653,91 @@ impl Store {
                 .db
                 .lock()
                 .unwrap()
-                .execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE ts < ?1 LIMIT 20000)", params![before])?;
+                .execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE ts < ?1 LIMIT ?2)", params![before, BATCH])?;
+            deleted += n as u64;
+            if n < BATCH {
+                break;
+            }
+        }
+        // Over the size limit: drop the oldest lines first, down to 90% of the
+        // limit so this does not run again a minute later. Ids grow with
+        // arrival, so the rowid order finds them without sorting the table.
+        // Deleted lines stay in the search index until it is merged, so the
+        // index is optimized before the size is measured again.
+        for _ in 0..4 {
+            let (live, total): (u64, u64) = {
+                let db = self.db.lock().unwrap();
+                (live_bytes(&db)?, db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?)
+            };
+            if live <= max_bytes || total == 0 {
+                break;
+            }
+            let target = max_bytes / 10 * 9;
+            let mut left = ((total as u128 * (live - target) as u128).div_ceil(live as u128) as u64).clamp(1, total);
+            while left > 0 {
+                let n = self.db.lock().unwrap().execute(
+                    "DELETE FROM entries WHERE id IN (SELECT id FROM entries ORDER BY id LIMIT ?1)",
+                    params![left.min(BATCH as u64)],
+                )? as u64;
+                deleted += n;
+                left = left.saturating_sub(n);
+                if n == 0 {
+                    break;
+                }
+            }
+            self.db.lock().unwrap().execute_batch("INSERT INTO entries_fts (entries_fts) VALUES ('optimize');")?;
+        }
+        let db = self.db.lock().unwrap();
+        let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+        if mode != 2 {
+            // Stores made before 0.3 could never shrink: switch them over once.
+            tracing::info!("rebuilding the log store once so it can give space back");
+            db.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+        } else if deleted > 0 {
+            db.execute_batch("PRAGMA incremental_vacuum;")?;
+        }
+        db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(deleted)
+    }
+
+    /// Space on disk: the database file plus its write-ahead log (kept under 64 MB).
+    fn used_bytes(&self, db: &Connection) -> Result<u64> {
+        let file =
+            |suffix: &str| self.path.as_ref().and_then(|p| std::fs::metadata(format!("{}{suffix}", p.display())).ok()).map(|m| m.len());
+        match file("") {
+            Some(main) => Ok(main + file("-wal").unwrap_or(0)),
+            None => live_bytes(db),
+        }
+    }
+
+    /// Lines and stored text per service of a connection, largest first.
+    pub fn usage(&self, conn: &str) -> Result<Vec<ServiceUsage>> {
+        let db = self.db.lock().unwrap();
+        let mut st = db.prepare(
+            "SELECT service, COUNT(*), SUM(LENGTH(text) + COALESCE(LENGTH(raw), 0)) AS b FROM entries WHERE conn = ?1
+             GROUP BY service ORDER BY b DESC",
+        )?;
+        let rows = st.query_map(params![conn], |r| Ok(ServiceUsage { service: r.get(0)?, entries: r.get(1)?, text_bytes: r.get(2)? }))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Deletes the stored lines of one service, in batches.
+    pub fn clear_service(&self, conn: &str, service: &str) -> Result<u64> {
+        let mut deleted = 0u64;
+        loop {
+            let n = self.db.lock().unwrap().execute(
+                "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE conn = ?1 AND service = ?2 LIMIT 20000)",
+                params![conn, service],
+            )?;
             deleted += n as u64;
             if n < 20000 {
                 break;
             }
         }
-        for _ in 0..50 {
-            let db = self.db.lock().unwrap();
-            if used_bytes(&db)? <= max_bytes {
-                break;
-            }
-            let n = db.execute(
-                "DELETE FROM entries WHERE id IN (SELECT id FROM entries ORDER BY ts ASC LIMIT (SELECT MAX(COUNT(*) / 20, 1000) FROM entries))",
-                [],
-            )?;
-            deleted += n as u64;
-            if n == 0 {
-                break;
-            }
-        }
         if deleted > 0 {
-            self.db.lock().unwrap().execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
+            self.db.lock().unwrap().execute_batch(
+                "INSERT INTO entries_fts (entries_fts) VALUES ('optimize'); PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);",
+            )?;
         }
         Ok(deleted)
     }
@@ -725,7 +802,7 @@ impl Store {
     pub fn stats(&self) -> Result<StoreStats> {
         let db = self.db.lock().unwrap();
         let (entries, oldest) = db.query_row("SELECT COUNT(*), MIN(ts) FROM entries", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        Ok(StoreStats { bytes: used_bytes(&db)?, entries, oldest })
+        Ok(StoreStats { bytes: self.used_bytes(&db)?, entries, oldest })
     }
 
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
@@ -744,7 +821,8 @@ impl Store {
     }
 }
 
-fn used_bytes(db: &Connection) -> Result<u64> {
+/// Pages that hold data; free pages are given back by `incremental_vacuum`.
+fn live_bytes(db: &Connection) -> Result<u64> {
     let pages: u64 = db.query_row("PRAGMA page_count", [], |r| r.get(0))?;
     let free: u64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
     let size: u64 = db.query_row("PRAGMA page_size", [], |r| r.get(0))?;
@@ -938,5 +1016,55 @@ mod tests {
         assert!(r.top.as_deref().unwrap_or("").contains("redis"), "{r:?}");
         assert_eq!(r.top_service.as_deref(), Some("shop_api"));
         assert_eq!(store.error_rate("c1", now - min / 2, now).unwrap().count, 0);
+    }
+
+    #[test]
+    fn the_size_limit_is_kept_and_space_goes_back_to_the_disk() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-retain-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logs.db");
+        // A store as older versions made it: auto_vacuum could not take effect after WAL was on.
+        Connection::open(&path).unwrap().execute_batch("PRAGMA journal_mode = WAL; CREATE TABLE x (a); DROP TABLE x;").unwrap();
+        let store = Store::open(&path).unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let s1 = src("shop_api", "1");
+        let text = "2026-10-27 INFO ".to_string() + &"chatty ".repeat(60);
+        for chunk in 0..20 {
+            let lines: Vec<(i64, String)> = (0..1000).map(|i| (now + (chunk * 1000 + i) * 1000, format!("{text}{i}"))).collect();
+            let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            store.insert("c1", &s1, &entries(&refs)).unwrap();
+        }
+        let size = |p: &std::path::Path| std::fs::metadata(p).unwrap().len();
+        let before = live_bytes(&store.db.lock().unwrap()).unwrap();
+        let max = before / 3;
+        store.retain(0, max).unwrap();
+        let db = store.db.lock().unwrap();
+        assert_eq!(db.query_row("PRAGMA auto_vacuum", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        let live = live_bytes(&db).unwrap();
+        assert!(live <= max && live > max / 2, "live {live}, limit {max}");
+        assert!(store.used_bytes(&db).unwrap() <= max + max / 4, "on disk {} > limit {max}", store.used_bytes(&db).unwrap());
+        drop(db);
+        assert!(size(&path) <= max + max / 4, "file {} > limit {max}", size(&path));
+        // The newest lines are the ones kept.
+        let all = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        let r = store.query("c1", &all, 1, 1).unwrap();
+        assert!(r.total > 0 && r.total < 20_000);
+        assert_eq!(r.entries[0].ts, now + 19_999 * 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usage_and_clearing_one_service() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        store.insert("c1", &src("shop_api", "1"), &entries(&[(now, "2026-10-27 INFO a"), (now + 1, "2026-10-27 INFO b")])).unwrap();
+        store.insert("c1", &src("shop_web", "1"), &entries(&[(now, "2026-10-27 INFO c")])).unwrap();
+        let u = store.usage("c1").unwrap();
+        assert_eq!((u[0].service.as_str(), u[0].entries), ("shop_api", 2));
+        assert_eq!(store.clear_service("c1", "shop_api").unwrap(), 2);
+        let u = store.usage("c1").unwrap();
+        assert_eq!(u.len(), 1);
+        assert_eq!(u[0].service, "shop_web");
     }
 }
