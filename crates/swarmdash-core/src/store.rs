@@ -1920,8 +1920,10 @@ mod tests {
         let t = std::time::Instant::now();
         store.insert("c1", &src("svc", "1"), &entries(&[(base + 10_000_000, "INFO new")])).unwrap();
         store.retain(base + 1000, u64::MAX).unwrap();
-        assert!(t.elapsed() < std::time::Duration::from_millis(500), "{:?}", t.elapsed());
-        assert!(!reader.is_finished(), "the export was still running");
+        // The export still running proves the writes did not wait for it; the
+        // time bound is loose because CI runners are sometimes slow.
+        assert!(!reader.is_finished(), "the writes waited for the export ({:?})", t.elapsed());
+        assert!(t.elapsed() < std::time::Duration::from_secs(1), "{:?}", t.elapsed());
         assert_eq!(reader.join().unwrap(), 5000);
         drop(store);
         let _ = std::fs::remove_dir_all(&dir);
