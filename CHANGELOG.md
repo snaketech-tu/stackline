@@ -3,7 +3,9 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
-## Unreleased
+## 0.4.0
+
+See when and why containers crashed: crashes and restarts on the time graphs with the log lines just before, links to any Logs view, and many small debugging fixes.
 
 ### Added
 - **Crashes and restarts on the time graphs.** swarmdash reads when containers start, stop, crash, run out of memory or fail their health check from Docker's events, and keeps them with the logs. The graphs on the Overview, the Logs page and a service's panel mark them with a line, and pointing at a bar lists what happened
