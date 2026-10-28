@@ -71,6 +71,8 @@ export interface SnapshotResponse { state: ConnState; snapshot: Snapshot | null;
 /** Which services get their logs collected: all but the listed ones, or only the listed ones (full names). */
 export interface Collect { only: boolean; services: string[] }
 export interface ServiceUsage { service: string; entries: number; textBytes: number }
+/** Stored lines per service, and the services whose lines are being deleted. */
+export interface Usage { services: ServiceUsage[]; deleting: string[] }
 export interface NewGroup { fp: string; pattern: string; count: number; service: string; first: number; sample: string }
 export interface ErrorSummary {
   byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[]

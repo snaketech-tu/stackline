@@ -195,6 +195,8 @@ pub struct Manager {
     pub store: Arc<Store>,
     pub alerts: Alerts,
     runtimes: Mutex<HashMap<String, Arc<Runtime>>>,
+    /// Services whose stored lines are being deleted, as (connection, service).
+    deleting: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
 }
 
 impl Manager {
@@ -207,6 +209,7 @@ impl Manager {
             store,
             alerts: Alerts::default(),
             runtimes: Mutex::new(HashMap::new()),
+            deleting: Arc::default(),
         });
         m.clone().spawn_retention();
         m.clone().spawn_alerts();
@@ -368,6 +371,30 @@ impl Manager {
             }
         }
         Ok(())
+    }
+
+    /// Deletes the stored lines of a service in the background: on a large
+    /// store that takes minutes, because every line also leaves the search
+    /// index. Returns false when it is already running.
+    pub fn clear_service(&self, conn: &str, service: &str) -> bool {
+        let key = (conn.to_string(), service.to_string());
+        if !self.deleting.lock().unwrap().insert(key.clone()) {
+            return false;
+        }
+        let (store, deleting) = (self.store.clone(), self.deleting.clone());
+        tokio::task::spawn_blocking(move || {
+            match store.clear_service(&key.0, &key.1) {
+                Ok(n) => tracing::info!("deleted {n} stored lines of {}", key.1),
+                Err(e) => tracing::warn!("could not delete the stored lines of {}: {e:#}", key.1),
+            }
+            deleting.lock().unwrap().remove(&key);
+        });
+        true
+    }
+
+    /// The services of a connection whose stored lines are being deleted.
+    pub fn deleting(&self, conn: &str) -> Vec<String> {
+        self.deleting.lock().unwrap().iter().filter(|(c, _)| c == conn).map(|(_, s)| s.clone()).collect()
     }
 
     fn spawn_retention(self: Arc<Self>) {

@@ -3,6 +3,15 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## 0.3.1
+
+Faster log deletion.
+
+- **Clear stored logs** empties the store at once instead of removing the lines one by one
+- Deleting the stored lines of one service runs in the background, so the app stays usable, and Preferences shows "Deleting…" until it is done
+- Deleting one service no longer reads the whole store again for every batch of lines, which made large deletes much slower than they had to be
+- When a connection reaches another host, its old lines are cleared the same faster way
+
 ## 0.3.0
 
 More room for logs, more about each service, alerts, and a store that keeps to its size limit.

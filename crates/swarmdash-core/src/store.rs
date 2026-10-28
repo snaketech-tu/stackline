@@ -23,6 +23,12 @@ pub struct Store {
     path: Option<std::path::PathBuf>,
 }
 
+/// Keeps the search index in step with deleted lines. Deleting every line
+/// drops it for a moment, so the table can be emptied at once.
+const DELETE_TRIGGER: &str = "CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
+    INSERT INTO entries_fts (entries_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;";
+
 const SCHEMA: &str = r#"
 PRAGMA auto_vacuum = INCREMENTAL;
 PRAGMA journal_mode = WAL;
@@ -54,9 +60,6 @@ CREATE INDEX IF NOT EXISTS entries_conn_fp ON entries (conn, fp, ts) WHERE fp IS
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5 (text, content = 'entries', content_rowid = 'id', tokenize = 'trigram');
 CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
     INSERT INTO entries_fts (rowid, text) VALUES (new.id, new.text);
-END;
-CREATE TRIGGER IF NOT EXISTS entries_ad AFTER DELETE ON entries BEGIN
-    INSERT INTO entries_fts (entries_fts, rowid, text) VALUES ('delete', old.id, old.text);
 END;
 CREATE TABLE IF NOT EXISTS patterns (conn TEXT NOT NULL, fp TEXT NOT NULL, pattern TEXT NOT NULL, PRIMARY KEY (conn, fp));
 CREATE TABLE IF NOT EXISTS cursors (conn TEXT NOT NULL, source TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (conn, source));
@@ -376,6 +379,7 @@ impl Store {
 
     fn init(db: Connection, path: Option<std::path::PathBuf>) -> Result<Store> {
         db.execute_batch(SCHEMA)?;
+        db.execute_batch(DELETE_TRIGGER)?;
         Ok(Store { db: Mutex::new(db), path })
     }
 
@@ -741,20 +745,70 @@ impl Store {
 
     /// Deletes the stored lines of one service, in batches.
     pub fn clear_service(&self, conn: &str, service: &str) -> Result<u64> {
-        let mut deleted = 0u64;
-        loop {
-            let n = self.db.lock().unwrap().execute(
-                "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE conn = ?1 AND service = ?2 LIMIT 20000)",
-                params![conn, service],
-            )?;
-            deleted += n as u64;
-            if n < 20000 {
-                break;
-            }
-        }
+        let deleted = self.delete_entries(Some(conn), Some(service))?;
         if deleted > 0 {
             self.merge_index()?;
             self.db.lock().unwrap().execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
+        }
+        Ok(deleted)
+    }
+
+    /// Deletes the lines of a connection (all when None), or of one of its
+    /// services. Every deleted line also has to leave the search index, which
+    /// is the slow part, so it runs in small batches and releases the lock in
+    /// between. When nothing would be left, the table and the index are
+    /// emptied at once instead.
+    fn delete_entries(&self, conn: Option<&str>, service: Option<&str>) -> Result<u64> {
+        const BATCH: i64 = 5_000;
+        {
+            let db = self.db.lock().unwrap();
+            let everything = match (conn, service) {
+                (None, _) => true,
+                (Some(c), None) => conns(&db)? == [c],
+                (Some(_), Some(_)) => false,
+            };
+            if everything {
+                let n: u64 = db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+                db.execute_batch(&format!(
+                    "BEGIN;
+                     INSERT INTO entries_fts (entries_fts) VALUES ('delete-all');
+                     DROP TRIGGER entries_ad;
+                     DELETE FROM entries;
+                     {DELETE_TRIGGER}
+                     COMMIT;"
+                ))?;
+                return Ok(n);
+            }
+        }
+        let (conn, mut deleted, mut after) = (conn.unwrap_or_default(), 0u64, 0i64);
+        loop {
+            let db = self.db.lock().unwrap();
+            // Walks the rows in id order, so each batch starts where the last
+            // one stopped instead of reading the table from the start again.
+            let n = match service {
+                Some(svc) => {
+                    let last: Option<i64> = db.query_row(
+                        "SELECT MAX(id) FROM (SELECT id FROM entries WHERE id > ?1 AND conn = ?2 AND service = ?3 ORDER BY id LIMIT ?4)",
+                        params![after, conn, svc, BATCH],
+                        |r| r.get(0),
+                    )?;
+                    let Some(last) = last else { break };
+                    let n = db.execute(
+                        "DELETE FROM entries WHERE id > ?1 AND id <= ?2 AND conn = ?3 AND service = ?4",
+                        params![after, last, conn, svc],
+                    )?;
+                    after = last;
+                    n
+                }
+                // The (conn, ts) index finds them; deleted rows leave it.
+                None => {
+                    db.execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE conn = ?1 LIMIT ?2)", params![conn, BATCH])?
+                }
+            };
+            deleted += n as u64;
+            if service.is_none() && (n as i64) < BATCH {
+                break;
+            }
         }
         Ok(deleted)
     }
@@ -804,12 +858,11 @@ impl Store {
             return Ok(false);
         }
         let changed = known.is_some();
+        drop(db);
         if changed {
-            db.execute("DELETE FROM entries WHERE conn = ?1", params![conn])?;
-            db.execute("DELETE FROM patterns WHERE conn = ?1", params![conn])?;
-            db.execute("DELETE FROM cursors WHERE conn = ?1", params![conn])?;
+            self.clear(Some(conn))?;
         }
-        db.execute(
+        self.db.lock().unwrap().execute(
             "INSERT INTO hosts (conn, identity) VALUES (?1, ?2) ON CONFLICT (conn) DO UPDATE SET identity = excluded.identity",
             params![conn, identity],
         )?;
@@ -828,17 +881,20 @@ impl Store {
     }
 
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
+        let deleted = self.delete_entries(conn, None)?;
+        if deleted > 0 {
+            self.merge_index()?;
+        }
         let db = self.db.lock().unwrap();
         match conn {
             Some(c) => {
-                db.execute("DELETE FROM entries WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM patterns WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM cursors WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM hosts WHERE conn = ?1", params![c])?;
             }
-            None => db.execute_batch("DELETE FROM entries; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
+            None => db.execute_batch("DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
         }
-        db.execute_batch("PRAGMA incremental_vacuum;")?;
+        db.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
 }
@@ -1100,6 +1156,35 @@ mod tests {
     }
 
     #[test]
+    fn clearing_keeps_the_search_index_in_step() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let lines: Vec<(i64, String)> = (0..12_000).map(|i| (now + i, format!("2026-10-27 INFO order {i} paid"))).collect();
+        let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+        store.insert("c1", &src("shop_api", "1"), &entries(&refs)).unwrap();
+        store.insert("c1", &src("shop_web", "1"), &entries(&[(now, "2026-10-27 INFO web paid")])).unwrap();
+        store.insert("c2", &src("shop_api", "1"), &entries(&[(now, "2026-10-27 INFO other paid")])).unwrap();
+        let search = |conn: &str| {
+            let mut f = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+            f.apply_query("paid");
+            store.query(conn, &f, 1, 1).unwrap().total
+        };
+        // One service, across several batches.
+        assert_eq!(store.clear_service("c1", "shop_api").unwrap(), 12_000);
+        assert_eq!((search("c1"), search("c2")), (1, 1));
+        // One connection of two goes batch by batch; the last one empties everything at once.
+        store.clear(Some("c1")).unwrap();
+        assert_eq!((search("c1"), search("c2")), (0, 1));
+        store.clear(None).unwrap();
+        assert_eq!(search("c2"), 0);
+        // New lines are indexed and deletable as before.
+        store.insert("c2", &src("shop_api", "1"), &entries(&[(now, "2026-10-27 INFO again paid")])).unwrap();
+        assert_eq!(search("c2"), 1);
+        assert_eq!(store.clear_service("c2", "shop_api").unwrap(), 1);
+        assert_eq!(search("c2"), 0);
+    }
+
+    #[test]
     fn usage_and_clearing_one_service() {
         let store = Store::open_in_memory().unwrap();
         let now = 1_700_000_000_000_000i64;
@@ -1141,10 +1226,16 @@ mod tests {
         store.usage("c1").unwrap();
         eprintln!("usage: {:?}", t.elapsed());
         let t = std::time::Instant::now();
+        let n = store.clear_service("c1", "svc1").unwrap();
+        eprintln!("clear_service {n} lines: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
         store.retain(0, live / 10 * 8).unwrap();
         eprintln!("retain to 80%: {:?}, live {} MB", t.elapsed(), live_bytes(&store.db.lock().unwrap()).unwrap() >> 20);
         let t = std::time::Instant::now();
         store.retain(0, live).unwrap();
         eprintln!("retain no-op: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        store.clear(None).unwrap();
+        eprintln!("clear all: {:?}", t.elapsed());
     }
 }

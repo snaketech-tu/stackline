@@ -214,11 +214,13 @@ async fn put_collect(st: St, Path(id): Path<String>, Json(c): Json<Collect>) -> 
     Ok(Json(c))
 }
 
-/// Stored lines and text per service of a connection.
+/// Stored lines and text per service of a connection, and the services
+/// whose lines are being deleted.
 async fn usage(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     let store = st.manager.store.clone();
-    let u = tokio::task::spawn_blocking(move || store.usage(&id)).await.map_err(|e| anyhow::anyhow!(e))??;
-    Ok(Json(json!(u)))
+    let conn = id.clone();
+    let u = tokio::task::spawn_blocking(move || store.usage(&conn)).await.map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(json!({ "services": u, "deleting": st.manager.deleting(&id) })))
 }
 
 #[derive(Deserialize)]
@@ -226,11 +228,10 @@ struct ClearInput {
     service: String,
 }
 
-/// Deletes the stored lines of one service. Docker is not touched.
-async fn clear_usage(st: St, Path(id): Path<String>, Json(input): Json<ClearInput>) -> Result<Json<Value>, ApiError> {
-    let store = st.manager.store.clone();
-    let n = tokio::task::spawn_blocking(move || store.clear_service(&id, &input.service)).await.map_err(|e| anyhow::anyhow!(e))??;
-    Ok(Json(json!({ "deleted": n })))
+/// Starts deleting the stored lines of one service. Docker is not touched.
+async fn clear_usage(st: St, Path(id): Path<String>, Json(input): Json<ClearInput>) -> (StatusCode, Json<Value>) {
+    let started = st.manager.clear_service(&id, &input.service);
+    (StatusCode::ACCEPTED, Json(json!({ "started": started })))
 }
 
 #[derive(Deserialize)]

@@ -439,11 +439,10 @@ class AppState {
     this.saveCollect({ only, services })
   }
 
-  /** Deletes the stored lines of one service (full name) of the active connection. Returns how many. */
-  async clearService(name: string): Promise<number> {
-    const r = await post<{ deleted: number }>(`/c/${encodeURIComponent(this.activeId)}/usage/clear`, { service: name })
-    this.notify(`Deleted ${r.deleted.toLocaleString()} stored ${r.deleted === 1 ? 'line' : 'lines'} of ${name}.`)
-    return r.deleted
+  /** Starts deleting the stored lines of one service (full name) of the active connection. */
+  async clearService(name: string) {
+    await post(`/c/${encodeURIComponent(this.activeId)}/usage/clear`, { service: name })
+    this.notify(`Deleting the stored lines of ${name}. This runs in the background; Preferences shows when it is done.`)
   }
 
   /** The theme button in the top bar: system → light → dark → system. */
