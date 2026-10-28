@@ -5,12 +5,31 @@ its GitHub release, and swarmdash shows it in the update dialog.
 
 ## 0.3.1
 
-Faster log deletion.
+Much less work for your server, a faster Logs page and faster log deletion.
 
+### Lighter on the server
+- Reading new log lines no longer makes Docker read each container's whole log file on every poll. On a container with a 330 MB log one poll cost the server about 5 seconds of CPU, every 3 seconds; now it reads only the end of the file
+- CPU and memory per container take about 10 ms to read instead of a full second each
+
+### Faster Logs page
+- The time graph and level counts come from per-minute totals instead of reading every line: on a store with 3 million lines a 7-day view takes about 0.2 s instead of 0.7 s
+- Picking a service or stack is fast even when the service logs rarely (a quiet service over 7 days: 0.07 s instead of 1.5 s), which also speeds up the Logs tab of the service panel
+- Searches, downloads and the views no longer wait for each other or for new lines being stored: a large download used to hold up everything else for as long as it ran
+- Downloads are written out while they are read, instead of being built in memory first
+- In Live mode with thousands of lines shown, refreshing no longer freezes the page for a moment, and the page uses less memory
+
+### Faster log deletion
 - **Clear stored logs** empties the store at once instead of removing the lines one by one
 - Deleting the stored lines of one service runs in the background, so the app stays usable, and Preferences shows "Deleting…" until it is done
 - Deleting one service no longer reads the whole store again for every batch of lines, which made large deletes much slower than they had to be
 - When a connection reaches another host, its old lines are cleared the same faster way
+
+### Fixed
+- Lines of a stack trace written within the same microsecond could be dropped
+- A service that keeps printing indented lines could grow a single log entry without end
+
+### Good to know
+- The first start after the update builds one more index in the background, which can take a minute on a large store; the views work meanwhile. CPU usage shows up after the second refresh
 
 ## 0.3.0
 

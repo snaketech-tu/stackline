@@ -45,6 +45,8 @@ pub struct Runtime {
     state: RwLock<ConnState>,
     client: tokio::sync::Mutex<Option<(DockerClient, Option<SshTunnel>)>>,
     tasks: Mutex<Vec<JoinHandle<()>>>,
+    /// CPU counters per container from the last refresh.
+    cpu: Mutex<snapshot::CpuSamples>,
 }
 
 impl Runtime {
@@ -63,6 +65,7 @@ impl Runtime {
             }),
             client: tokio::sync::Mutex::new(None),
             tasks: Mutex::new(vec![]),
+            cpu: Mutex::default(),
         }
     }
 
@@ -113,7 +116,7 @@ impl Runtime {
             let started = Instant::now();
             client.ping().await?;
             let ms = started.elapsed().as_millis() as u64;
-            Ok::<_, anyhow::Error>((snapshot::fetch(&client, &Options { stats: settings.collect_stats }).await?, ms))
+            Ok::<_, anyhow::Error>((snapshot::fetch(&client, &Options { stats: settings.collect_stats, cpu: &self.cpu }).await?, ms))
         }
         .await;
         match result {
@@ -210,6 +213,12 @@ impl Manager {
             alerts: Alerts::default(),
             runtimes: Mutex::new(HashMap::new()),
             deleting: Arc::default(),
+        });
+        let store = m.store.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = store.upgrade() {
+                tracing::warn!("could not upgrade the log store: {e:#}");
+            }
         });
         m.clone().spawn_retention();
         m.clone().spawn_alerts();

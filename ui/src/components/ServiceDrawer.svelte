@@ -59,8 +59,8 @@
     return () => clearInterval(t)
   })
 
-  let hist = $state<LogResponse | null>(null)
-  let lines = $state<LogResponse | null>(null)
+  let hist = $state.raw<LogResponse | null>(null)
+  let lines = $state.raw<LogResponse | null>(null)
   let win = $state({ from: 0, to: 0 })
 
   /** The stored range, at most the last 6 hours for the chart and 24 hours for lines. */
@@ -97,7 +97,13 @@
       const r = range(24 * 3600e3)
       api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...r, service: svc, levels: lv, q: filter, buckets: 1, limit: n })}`)
         // A slow answer for filters that changed since must not replace the current one.
-        .then((x) => mine === linesSeq && (lines = x))
+        .then((x) => {
+          if (mine !== linesSeq) return
+          // Lines already shown keep their objects, so their rows are not redrawn.
+          const known = new Map(lines?.result.entries.map((e) => [e.id, e]))
+          x.result.entries = x.result.entries.map((e) => known.get(e.id) ?? e)
+          lines = x
+        })
         .catch(() => {})
     }
     untrack(get)

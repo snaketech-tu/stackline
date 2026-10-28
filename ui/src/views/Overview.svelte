@@ -25,7 +25,7 @@
   let hostMem = $derived(memPct(host.memUsed, host.memTotal))
 
   // Errors and warnings of the last 6 hours (or since the oldest stored line), refreshed with the snapshot.
-  let hist = $state<LogResponse | null>(null)
+  let hist = $state.raw<LogResponse | null>(null)
   let win = $state({ from: Date.now() - 6 * 3600e3, to: Date.now() })
   $effect(() => {
     const id = app.activeId
