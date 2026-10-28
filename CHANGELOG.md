@@ -9,10 +9,20 @@ its GitHub release, and swarmdash shows it in the update dialog.
 - The top bar is see-through with a blur again in Chrome, Edge and the Windows desktop app. The CSS build kept only the Safari spelling of the blur
 - An error group whose message is too long for its title now ends in "…" instead of stopping in the middle of a word. The full message is in the sample below it, as before
 - A search typed on the Logs page is no longer lost when you switch to another page within a quarter of a second
+- The clock button on a log line ("30 s around it") now shows what that container printed before and after, instead of every service of the host
+- When a container stops, its last lines are read at once instead of up to a minute later. They usually say why it stopped
+- Clicking an error alert shows the errors of the alert's own window (5, 10 or 15 minutes) from every service, instead of always the last 15 minutes of the services picked on the Logs page
+- An alert names the service its most frequent error really came from
+- "Services healthy" on the Overview counts a service whose health check fails as not healthy, like the Stacks page does
+- The most frequent error named under "errors in the last hour" says which time range it is from
+- Deleting a connection also forgets which of its services were collected, so a new connection with the same name starts collecting everything
+- Log lines with a level such as `[Error]` or `[Warning]` in mixed case lose the level in the stream, like `[ERROR]` already did
+- A browser tab no longer asks for alerts every 15 seconds while alerts are switched off
 
 ### Tests
 - UI tests click through swarmdash in a browser against the demo Compose project on every pull request. They cover error messages cut off, menus drawn under cards, the store size not updating, clearing the store, and filters kept between pages, and fail if swarmdash sends Docker anything but a read
 - A store test has a noisy service write several times the size limit and checks that the file on disk stays under it
+- Tests for the HTTP API (sign-in, the address check, settings checks, deleting a connection) and for the log collector against a stand-in Docker (first read, newest lines only, a burst bigger than one read, reading again after a clear)
 
 ## 0.3.2
 

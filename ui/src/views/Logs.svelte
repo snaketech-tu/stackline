@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
-  import { app, LEVELS, PRESETS, type Preset } from '../lib/state.svelte'
-  import { api, query } from '../lib/api'
+  import { app, LEVELS, LINES, PRESETS, type Preset } from '../lib/state.svelte'
+  import { api, fetchLogs, keepEntries } from '../lib/api'
   import { ago, bytes, firstLine, hhmm, patternParts, plural, searchTerms } from '../lib/format'
   import type { Entry, Group, Level, LogResponse, StoreStats } from '../lib/types'
   import Histogram from '../components/Histogram.svelte'
@@ -34,13 +34,10 @@
     const mine = ++seq
     loading = true
     try {
-      const r = await api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...p, buckets: 60, limit: L.limit })}`)
+      const r = await fetchLogs(id, { ...p, buckets: 60, limit: L.limit })
       if (mine !== seq) return
-      // Lines already shown keep their objects, so their rows are not redrawn.
-      const known = new Map(res?.result.entries.map((e) => [e.id, e]))
-      r.result.entries = r.result.entries.map((e) => known.get(e.id) ?? e)
-      res = r
-      shown = { from: +p.from, to: +p.to }
+      res = keepEntries(res, r)
+      shown = { from: p.from, to: p.to }
       error = null
       if (openFirst && r.result.entries[0]) L.openRows.add(r.result.entries[0].id)
       openFirst = false
@@ -154,16 +151,21 @@
     L.sources.clear()
     L.sources.add(svc)
   }
+  /**
+   * The 30 seconds around a line, from the same container: what it printed
+   * before and after. Removing the container chip widens it to the host.
+   */
   function context(e: Entry) {
     L.zoom(e.ts / 1000 - 30000, e.ts / 1000 + 30000)
     L.sources.clear()
+    L.sources.add(e.service)
     L.group = null
-    setQ('')
+    L.allLevels()
+    setQ(`container:${e.source.slice(0, 12)}`)
   }
   function clearAll() {
     L.sources.clear()
-    L.levels.clear()
-    LEVELS.forEach((l) => L.levels.add(l))
+    L.allLevels()
     L.group = null
     picked = null
     setQ('')
@@ -188,14 +190,9 @@
     }
   }
 
-  /** Shows 500 more of the newest lines, up to what the store returns at once. */
-  function more() {
-    L.limit = Math.min(5000, L.limit + 500)
-  }
   let side = $derived(L.groupsAt === 'side' && L.groupsOpen && !L.maxi)
 
   const sourceLabel = (s: string) => (s.startsWith('stack:') ? `stack ${s.slice(6)}` : s)
-  let soloLevels = $derived(L.levels.size < LEVELS.length)
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -302,14 +299,14 @@
       <button class="ib" onclick={() => (L.maxi = !L.maxi)} title={L.maxi ? 'Back to the page (Esc or f)' : 'Fill the window with the stream (f)'}
         aria-label={L.maxi ? 'Back to the page' : 'Fill the window with the stream'}><Icon name={L.maxi ? 'minimize' : 'maximize'} size={15} /></button>
     </div>
-    {#if L.sources.size || soloLevels || L.group || L.q}
+    {#if L.sources.size || L.soloLevels || L.group || L.q}
       <div class="chiprow">
         <span class="muted">Filters</span>
         {#each [...L.sources] as s (s)}
           <button class="fchip" onclick={() => L.sources.delete(s)} aria-label="Remove {sourceLabel(s)}"><span class="t">{sourceLabel(s)}</span><span class="x"><Icon name="x" size={11} /></span></button>
         {/each}
-        {#if soloLevels}
-          <button class="fchip" onclick={() => LEVELS.forEach((l) => L.levels.add(l))} aria-label="Show all levels"><span class="t">{[...L.levels].map((l) => l.toLowerCase()).join(' + ')}</span><span class="x"><Icon name="x" size={11} /></span></button>
+        {#if L.soloLevels}
+          <button class="fchip" onclick={() => L.allLevels()} aria-label="Show all levels"><span class="t">{[...L.levels].map((l) => l.toLowerCase()).join(' + ')}</span><span class="x"><Icon name="x" size={11} /></span></button>
         {/if}
         {#if L.group}
           <button class="fchip g" onclick={() => { L.group = null; picked = null }} aria-label="Show all groups"><span class="t">group: {groupLabel}</span><span class="x"><Icon name="x" size={11} /></span></button>
@@ -322,8 +319,7 @@
     {/if}
     <div class="stream">
       {#each rows as { e, n } (e.id)}
-        <LogRow {e} {n} {terms} open={L.openRows.has(e.id)}
-          ontoggle={() => (L.openRows.has(e.id) ? L.openRows.delete(e.id) : L.openRows.add(e.id))}
+        <LogRow {e} {n} {terms} open={L.openRows.has(e.id)} ontoggle={() => L.toggleRow(e.id)}
           onservice={() => onlyService(e.service)} oncontext={() => context(e)} />
       {:else}
         <div class="empty">{res ? 'No log lines match. Remove a filter or pick a wider range.' : ''}</div>
@@ -331,8 +327,8 @@
     </div>
     <div class="stream-foot">
       {#if L.live}<span class="live-dot" style="background:var(--err)"></span>Following new lines every {app.settings?.logPollSecs ?? 3} s.{:else}Updates every 15 s. Turn on Live to follow new lines.{/if}
-      {#if res && res.result.total > res.result.entries.length && L.limit < 5000}
-        <button class="btn ghost sm" onclick={more}>Show {Math.min(500, res.result.total - res.result.entries.length).toLocaleString()} more</button>
+      {#if res && res.result.total > res.result.entries.length && L.limit < LINES.max}
+        <button class="btn ghost sm" onclick={() => L.more()}>Show {Math.min(LINES.step, res.result.total - res.result.entries.length).toLocaleString()} more</button>
       {/if}
       <span class="spacer"></span><span class="hide-sm">j / k move · Enter expands · c copies · f fills the window</span>
     </div>

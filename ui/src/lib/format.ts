@@ -73,8 +73,9 @@ export function firstLine(s: string): string {
 }
 
 const TS = /^\s*(?:\[?\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2}|\s(?:UTC|GMT|[A-Z]{1,3}T)\b)?\]?|\[\d{2}\/\w{3}\/\d{4}:\d{2}:\d{2}:\d{2} [+-]\d{4}\]|\w{3} [ \d]\d \d{2}:\d{2}:\d{2}|\[?\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\]?)\s*/
+// The level in brackets matches in any case, as in the core (`[Error]`, `[WARNING]`, `[warn]`).
 const PREFIX =
-  /^(?:\[\d+\]\s+)?(?:\[(?:trace|debug|info|notice|warn|warning|error|err|fatal|crit|critical|alert|emerg|panic|TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRIT|CRITICAL|ALERT|EMERG|PANIC)\]:?\s+|(?:TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL|PANIC|LOG):?\s+)?(?:\d+#\d+:\s+(?:\*\d+\s+)?)?(?:\d+\s+---\s+(?:\[[^\]]*\]\s*)+)?/
+  /^(?:\[\d+\]\s+)?(?:\[(?:[Tt][Rr][Aa][Cc][Ee]|[Dd][Ee][Bb][Uu][Gg]|[Ii][Nn][Ff][Oo]|[Nn][Oo][Tt][Ii][Cc][Ee]|[Ww][Aa][Rr][Nn](?:[Ii][Nn][Gg])?|[Ee][Rr][Rr](?:[Oo][Rr])?|[Ff][Aa][Tt][Aa][Ll]|[Cc][Rr][Ii][Tt](?:[Ii][Cc][Aa][Ll])?|[Aa][Ll][Ee][Rr][Tt]|[Ee][Mm][Ee][Rr][Gg]|[Pp][Aa][Nn][Ii][Cc])\]:?\s+|(?:TRACE|DEBUG|INFO|NOTICE|WARN|WARNING|ERROR|ERR|FATAL|CRITICAL|PANIC|LOG):?\s+)?(?:\d+#\d+:\s+(?:\*\d+\s+)?)?(?:\d+\s+---\s+(?:\[[^\]]*\]\s*)+)?/
 
 /** A log line without the timestamp, level and thread the stream already shows. Mirrors `strip_prefix` in the core. */
 export function tidy(line: string): string {

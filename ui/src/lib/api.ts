@@ -1,6 +1,8 @@
 // Thin client for the local swarmdash API. The server signs the browser in with
 // a cookie; during development a `?token=` in the page URL is sent as a header.
 
+import type { LogResponse } from './types'
+
 let devToken: string | null = null
 try {
   const u = new URL(location.href)
@@ -54,6 +56,24 @@ export function query(params: Record<string, string | number | undefined | null>
   const q = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
   return q.toString()
+}
+
+/** Parameters of a log query. Times are Unix milliseconds; `levels`, `stack` and `service` are comma lists. */
+export interface LogParams {
+  from: number; to: number; levels?: string; stack?: string; service?: string; q?: string; buckets?: number; limit?: number
+}
+
+/** Queries the stored logs of a connection. */
+export function fetchLogs(conn: string, p: LogParams): Promise<LogResponse> {
+  return api<LogResponse>(`/c/${encodeURIComponent(conn)}/logs?${query({ ...p, from: Math.floor(p.from), to: Math.ceil(p.to) })}`)
+}
+
+/** Lines already shown keep their objects, so their rows are not drawn again. */
+export function keepEntries(prev: LogResponse | null, next: LogResponse): LogResponse {
+  if (!prev) return next
+  const known = new Map(prev.result.entries.map((e) => [e.id, e]))
+  next.result.entries = next.result.entries.map((e) => known.get(e.id) ?? e)
+  return next
 }
 
 export function hasDevToken(): boolean {

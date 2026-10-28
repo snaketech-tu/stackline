@@ -81,6 +81,11 @@ impl Collector {
                 epoch,
                 src: src.clone(),
             });
+            // A container that just stopped is read right away: its last
+            // lines usually say why, and should not wait for the next minute.
+            if st.src.running && !src.running {
+                st.last_read = None;
+            }
             st.src = src;
             st.epoch = epoch;
             if st.cursor.is_none() {
@@ -269,4 +274,191 @@ async fn flush(store: &Arc<Store>, conn: &str, st: &SourceState, entries: &mut V
     })
     .await??;
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::*;
+    use crate::docker::Endpoint;
+    use crate::store::LogFilter;
+
+    /// Stands in for Docker's log endpoint: answers `GET …/logs` with the
+    /// lines newer than `since`, and only the last `tail` of them, the way the
+    /// engine does. Records every path it was asked for.
+    struct FakeDocker {
+        lines: Arc<Mutex<Vec<(i64, String)>>>,
+        paths: Arc<Mutex<Vec<String>>>,
+        addr: String,
+    }
+
+    impl FakeDocker {
+        async fn start() -> FakeDocker {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap().to_string();
+            let lines: Arc<Mutex<Vec<(i64, String)>>> = Arc::default();
+            let paths: Arc<Mutex<Vec<String>>> = Arc::default();
+            let (l, p) = (lines.clone(), paths.clone());
+            tokio::spawn(async move {
+                loop {
+                    let Ok((mut sock, _)) = listener.accept().await else { return };
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => break,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf);
+                    let path = head.lines().next().unwrap_or("").split(' ').nth(1).unwrap_or("").to_string();
+                    p.lock().unwrap().push(path.clone());
+                    let body = frames(&l.lock().unwrap(), &path);
+                    let res = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nContent-Length: {}\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = sock.write_all(res.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                    let _ = sock.shutdown().await;
+                }
+            });
+            FakeDocker { lines, paths, addr }
+        }
+
+        fn client(&self) -> DockerClient {
+            DockerClient::new(Endpoint::Tcp(self.addr.clone()))
+        }
+
+        fn write(&self, ts: i64, text: &str) {
+            self.lines.lock().unwrap().push((ts, text.to_string()));
+        }
+
+        fn paths(&self) -> Vec<String> {
+            std::mem::take(&mut *self.paths.lock().unwrap())
+        }
+    }
+
+    fn param(path: &str, key: &str) -> Option<String> {
+        path.split_once('?')?.1.split('&').find_map(|kv| kv.strip_prefix(&format!("{key}=")).map(str::to_string))
+    }
+
+    /// Multiplexed stdout frames of the lines a request asks for.
+    fn frames(lines: &[(i64, String)], path: &str) -> Vec<u8> {
+        let since = param(path, "since").map(|s| {
+            let (secs, frac) = s.split_once('.').unwrap_or((&s, "0"));
+            secs.parse::<i64>().unwrap() * 1_000_000 + format!("{frac:0<9}")[..6].parse::<i64>().unwrap()
+        });
+        let tail = param(path, "tail").map(|t| t.parse::<usize>().unwrap());
+        let mut chosen: Vec<&(i64, String)> = lines.iter().collect();
+        if let Some(n) = tail {
+            chosen = chosen[chosen.len().saturating_sub(n)..].to_vec();
+        }
+        let mut out = Vec::new();
+        for (ts, text) in chosen {
+            if since.is_some_and(|s| *ts < s) {
+                continue;
+            }
+            let stamp = chrono::DateTime::from_timestamp_micros(*ts).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+            let line = format!("{stamp} {text}\n");
+            out.extend_from_slice(&[1, 0, 0, 0]);
+            out.extend_from_slice(&(line.len() as u32).to_be_bytes());
+            out.extend_from_slice(line.as_bytes());
+        }
+        out
+    }
+
+    fn source() -> LogSource {
+        LogSource {
+            key: "c1".into(),
+            via_task: false,
+            stack: "shop".into(),
+            service: "shop_api".into(),
+            replica: "1".into(),
+            node: "shop".into(),
+            tty: false,
+            running: true,
+        }
+    }
+
+    fn stored(store: &Store) -> u64 {
+        store.query("conn", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 10).unwrap().total
+    }
+
+    const RETENTION: i64 = 7 * 86_400_000_000;
+
+    #[tokio::test]
+    async fn reads_the_retention_once_then_only_the_newest_lines() {
+        let docker = FakeDocker::start().await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let now = chrono::Utc::now().timestamp_micros();
+        for i in 0..3 {
+            docker.write(now - 60_000_000 + i * 1_000_000, &format!("INFO line {i}"));
+        }
+        let mut c = Collector::new("conn", store.clone());
+
+        // The first read asks for everything within the retention, without a tail.
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!((r.entries, r.errors.len()), (3, 0), "{r:?}");
+        let paths = docker.paths();
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].contains("since=") && !paths[0].contains("tail="), "{}", paths[0]);
+        assert_eq!(store.cursor("conn", "c1").unwrap(), Some(now - 60_000_000 + 2_000_000));
+
+        // Later polls ask for the newest lines after the cursor.
+        docker.write(now - 30_000_000, "INFO line 3");
+        docker.write(now - 29_000_000, "ERROR line 4");
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!(r.entries, 2, "{r:?}");
+        let paths = docker.paths();
+        assert!(paths[0].contains(&format!("tail={TAIL_MIN}")), "{}", paths[0]);
+        assert_eq!(stored(&store), 5);
+
+        // Nothing new: nothing stored twice.
+        assert_eq!(c.poll(&docker.client(), vec![source()], RETENTION).await.entries, 0);
+        assert_eq!(stored(&store), 5);
+        docker.paths();
+
+        // After the store was cleared the source is read again from the start.
+        store.clear(None).unwrap();
+        assert_eq!(stored(&store), 0);
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!(r.entries, 5, "{r:?}");
+        assert!(!docker.paths()[0].contains("tail="));
+        assert_eq!(stored(&store), 5);
+    }
+
+    #[tokio::test]
+    async fn a_burst_bigger_than_the_tail_is_asked_for_again() {
+        let docker = FakeDocker::start().await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let now = chrono::Utc::now().timestamp_micros();
+        docker.write(now - 60_000_000, "INFO start");
+        let mut c = Collector::new("conn", store.clone());
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!(r.entries, 1, "{r:?}");
+        docker.paths();
+
+        // More lines than one tail: the tail grows until the newest lines fit.
+        for i in 0..1500 {
+            docker.write(now - 30_000_000 + i * 1000, &format!("INFO burst {i}"));
+        }
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!((r.entries, r.errors.len()), (1500, 0), "{r:?}");
+        let tails: Vec<String> = docker.paths().iter().filter_map(|p| param(p, "tail")).collect();
+        assert_eq!(tails, vec![TAIL_MIN.to_string(), (TAIL_MIN * 8).to_string()]);
+        assert_eq!(stored(&store), 1501);
+
+        // A container that stopped is read once more at once, for its last
+        // lines, and then left alone for a minute.
+        let mut stopped = source();
+        stopped.running = false;
+        docker.write(now - 1_000_000, "ERROR fatal: out of memory");
+        let r = c.poll(&docker.client(), vec![stopped.clone()], RETENTION).await;
+        assert_eq!((r.sources, r.entries), (1, 1), "{r:?}");
+        assert_eq!(c.poll(&docker.client(), vec![stopped], RETENTION).await.sources, 0);
+    }
 }

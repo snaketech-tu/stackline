@@ -1,9 +1,8 @@
 <script lang="ts">
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
-  import { SvelteSet } from 'svelte/reactivity'
-  import { app, LEVELS, load, save, type ServiceTab } from '../lib/state.svelte'
-  import { api, query } from '../lib/api'
+  import { app, LEVELS, LINES, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
+  import { api, fetchLogs, keepEntries, query } from '../lib/api'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
   import type { Level, LogResponse, ServiceDetails } from '../lib/types'
@@ -23,12 +22,11 @@
   let errs = $derived(s ? (app.errors?.byService[s.fullName] ?? 0) : 0)
 
   const COL: Record<Level, string> = { ERROR: 'var(--err)', WARN: 'var(--warn)', INFO: 'var(--info)', DEBUG: 'var(--dbg)' }
-  const levels = new SvelteSet<Level>(LEVELS)
-  const openRows = new SvelteSet<number>()
+  /** Levels, open entries and line count of the Logs tab; the same controls as the Logs page. */
+  const F = new LogFilters()
   let replica = $state<string | null>(null)
   let qInput = $state('')
   let q = $state('')
-  let limit = $state(300)
   /** Covers the whole window instead of most of it. */
   let full = $state(load('swarmdash-drawer-full') === '1')
   function toggleFull() {
@@ -64,18 +62,14 @@
   let win = $state({ from: 0, to: 0 })
 
   /** The stored range, at most the last 6 hours for the chart and 24 hours for lines. */
-  function range(max: number) {
-    const to = Date.now()
-    const oldest = app.errors?.oldest ? app.errors.oldest / 1000 : 0
-    return { from: Math.floor(Math.max(to - max, Math.min(oldest, to - 15 * 60e3))), to }
-  }
+  const range = (max: number) => app.storedRange(max)
 
   // Errors and groups: for the overview and errors tabs.
   $effect(() => {
     void app.snap?.fetchedAt
     if (!name) return
     const r = range(6 * 3600e3)
-    api<LogResponse>(`/c/${encodeURIComponent(app.activeId)}/logs?${query({ ...r, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })}`)
+    fetchLogs(app.activeId, { ...r, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })
       .then((x) => {
         hist = x
         win = r
@@ -89,20 +83,16 @@
     const svc = name
     if (!svc || (tab !== 'logs' && !failing)) return
     const id = app.activeId
-    const lv = tab === 'logs' ? [...levels].join(',') : LEVELS.join(',')
+    const lv = tab === 'logs' ? [...F.levels].join(',') : LEVELS.join(',')
     const filter = tab === 'logs' ? [replica ? `replica:${replica}` : '', q].filter(Boolean).join(' ') : ''
-    const n = tab === 'logs' ? limit : 1
+    const n = tab === 'logs' ? F.limit : 1
     const mine = ++linesSeq
     const get = () => {
-      const r = range(24 * 3600e3)
-      api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...r, service: svc, levels: lv, q: filter, buckets: 1, limit: n })}`)
+      fetchLogs(id, { ...range(24 * 3600e3), service: svc, levels: lv, q: filter, buckets: 1, limit: n })
         // A slow answer for filters that changed since must not replace the current one.
         .then((x) => {
           if (mine !== linesSeq) return
-          // Lines already shown keep their objects, so their rows are not redrawn.
-          const known = new Map(lines?.result.entries.map((e) => [e.id, e]))
-          x.result.entries = x.result.entries.map((e) => known.get(e.id) ?? e)
-          lines = x
+          lines = keepEntries(lines, x)
         })
         .catch(() => {})
     }
@@ -126,27 +116,16 @@
     if (i < 0 || !list.length) return
     const next = list[(i + d + list.length) % list.length]
     replica = null
-    openRows.clear()
+    F.openRows.clear()
+    F.limit = LINES.first
     lines = null
     hist = null
     details = null
-    limit = 300
     app.drawer = { kind: 'service', key: next.key, tab }
   }
   function replicaLogs(slot: string) {
     replica = slot
     setTab('logs')
-  }
-  function pickLevel(l: Level, add: boolean) {
-    if (add) {
-      if (levels.has(l)) levels.delete(l)
-      else levels.add(l)
-      if (!levels.size) LEVELS.forEach((x) => levels.add(x))
-      return
-    }
-    const solo = levels.size === 1 && levels.has(l)
-    levels.clear()
-    for (const x of solo ? LEVELS : [l]) levels.add(x)
   }
   function keydown(e: KeyboardEvent) {
     const tag = (document.activeElement as HTMLElement | null)?.tagName
@@ -343,7 +322,7 @@
     <div class="fbar">
       <span class="lvgroup" role="group" aria-label="Levels">
         {#each LEVELS as l (l)}
-          <button class="lv" aria-pressed={levels.has(l)} onclick={(e) => pickLevel(l, e.shiftKey || e.metaKey || e.ctrlKey)} title="Click: only {l.toLowerCase()}. Shift-click: add or remove.">
+          <button class="lv" aria-pressed={F.levels.has(l)} onclick={(e) => F.pickLevel(l, e.shiftKey || e.metaKey || e.ctrlKey)} title="Click: only {l.toLowerCase()}. Shift-click: add or remove.">
             <span class="sw" style:background={COL[l]}></span>{l[0] + l.slice(1).toLowerCase()}<span class="n">{lines?.result.levels[l] ?? 0}</span>
           </button>
         {/each}
@@ -360,7 +339,7 @@
     <div class="boxed">
       <div class="stream">
         {#each lines?.result.entries ?? [] as e (e.id)}
-          <LogRow {e} service={false} {terms} open={openRows.has(e.id)} ontoggle={() => (openRows.has(e.id) ? openRows.delete(e.id) : openRows.add(e.id))} />
+          <LogRow {e} service={false} {terms} open={F.openRows.has(e.id)} ontoggle={() => F.toggleRow(e.id)} />
         {:else}
           <div class="empty">{lines ? 'No lines stored for this service yet.' : ''}</div>
         {/each}
@@ -368,7 +347,7 @@
     </div>
     {#if lines && lines.result.total > lines.result.entries.length}
       <span class="muted" style="font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">Newest {lines.result.entries.length.toLocaleString()} of {lines.result.total.toLocaleString()} lines.
-        {#if limit < 5000}<button class="btn ghost sm" onclick={() => (limit = Math.min(5000, limit + 500))}>Show {Math.min(500, lines.result.total - lines.result.entries.length).toLocaleString()} more</button>{/if}
+        {#if F.limit < LINES.max}<button class="btn ghost sm" onclick={() => F.more()}>Show {Math.min(LINES.step, lines.result.total - lines.result.entries.length).toLocaleString()} more</button>{/if}
         Open in Logs for groups and download.</span>
     {/if}
   {:else}

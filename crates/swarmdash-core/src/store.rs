@@ -1166,21 +1166,22 @@ fn error_rate(db: &Connection, conn: &str, from: i64, to: i64) -> Result<ErrorRa
     if count == 0 {
         return Ok(rate);
     }
-    let top: Option<(String, String, i64)> = db
+    // The service comes from the group's newest line: a bare column next to
+    // GROUP BY would be any line's, and a group can span several services.
+    let top: Option<(String, i64)> = db
         .query_row(
-            "SELECT fp, service, MAX(id) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL
+            "SELECT fp, MAX(id) FROM entries WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL
                  GROUP BY fp ORDER BY COUNT(*) DESC LIMIT 1",
             params![conn, from, to, err],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
-    if let Some((fp, service, id)) = top {
+    if let Some((fp, id)) = top {
         let pattern: Option<String> =
             db.query_row("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2", params![conn, fp], |r| r.get(0)).optional()?;
-        let text = match pattern.filter(|p| !p.is_empty()) {
-            Some(p) => p,
-            None => db.query_row("SELECT text FROM entries WHERE id = ?1", params![id], |r| r.get::<_, String>(0))?,
-        };
+        let (service, sample): (String, String) =
+            db.query_row("SELECT service, text FROM entries WHERE id = ?1", params![id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let text = pattern.filter(|p| !p.is_empty()).unwrap_or(sample);
         rate.top = Some(text.lines().next().unwrap_or("").chars().take(200).collect());
         rate.top_service = Some(service);
     }

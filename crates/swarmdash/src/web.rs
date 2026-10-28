@@ -76,10 +76,16 @@ async fn static_file(uri: Uri) -> Response {
     };
     let mime = mime_guess::from_path(&path).first_or_octet_stream();
     let cache = if path.starts_with("assets/") { "public, max-age=31536000, immutable" } else { "no-cache" };
+    // A release build embeds the files: serve them from the binary instead of
+    // copying every file on every request.
+    let body = match file.data {
+        std::borrow::Cow::Borrowed(b) => Body::from(axum::body::Bytes::from_static(b)),
+        std::borrow::Cow::Owned(v) => Body::from(v),
+    };
     Response::builder()
         .header(header::CONTENT_TYPE, mime.as_ref())
         .header(header::CACHE_CONTROL, cache)
         .header("x-content-type-options", "nosniff")
-        .body(Body::from(file.data.into_owned()))
+        .body(body)
         .unwrap()
 }
