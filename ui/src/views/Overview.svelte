@@ -35,6 +35,8 @@
     const from = Math.floor(Math.max(to - 6 * 3600e3, Math.min(oldest, to - 15 * 60e3)))
     api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from, to, levels: 'ERROR,WARN', buckets: 48, limit: 1 })}`)
       .then((r) => {
+        // An answer for a connection that is no longer selected must not show up here.
+        if (id !== app.activeId) return
         hist = r
         win = { from, to }
       })
@@ -53,7 +55,7 @@
       api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ from: to - 6 * 3600e3, to, service: s.fullName, buckets: 1, limit: 1 })}`)
         .then((r) => {
           const e = r.result.entries[0]
-          if (e) lastLines[s.fullName] = tidy(firstLine(e.text))
+          if (e && id === app.activeId) lastLines[s.fullName] = tidy(firstLine(e.text))
         })
         .catch(() => {})
     }
@@ -133,6 +135,17 @@
   }
 </script>
 
+{#if app.activeAlert}
+  {@const a = app.activeAlert}
+  <div class="err-banner alert-banner" role="alert">
+    <Icon name="bell" size={16} />
+    <span><b>{a.count} errors in the last {a.windowMins} minutes on {a.name}</b> · alert at {a.threshold}{#if a.since}, since {hhmm(a.since)}{/if}
+      {#if a.top}<span class="why mono" title={a.top}>Most frequent: {a.top}{#if a.topService} ({a.topService}){/if}</span>{/if}</span>
+    <span class="spacer"></span>
+    <button class="btn sm" onclick={() => app.openAlert(a)}>Show errors</button>
+  </div>
+{/if}
+
 <div class="kpis">
   {#if single}
     <button class="panel kpi" onclick={() => snap.nodes[0] && (app.drawer = { kind: 'node', id: snap.nodes[0].id })}>
@@ -191,7 +204,7 @@
     </div>
   </section>
   <section class="panel">
-    <div class="ph"><h2>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? '6h' : `since ${hhmm(win.from)}`}</h2><span class="spacer"></span><button class="btn ghost sm" onclick={() => app.showLogs([], ['ERROR', 'WARN'])}>Open in Logs</button></div>
+    <div class="ph"><h2>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? '6h' : `since ${hhmm(win.from)}`}</h2><span class="pill hide-sm" title="Only logs of the selected connection are shown here">{host.name}</span><span class="spacer"></span><button class="btn ghost sm" onclick={() => app.showLogs([], ['ERROR', 'WARN'])}>Open in Logs</button></div>
     {#if hist}
       <Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} onrange={(a, z) => { app.showLogs([], ['ERROR', 'WARN']); app.logs.zoom(a, z) }} />
     {:else}

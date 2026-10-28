@@ -32,7 +32,7 @@
     const mine = ++seq
     loading = true
     try {
-      const r = await api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...p, buckets: 60, limit: 300 })}`)
+      const r = await api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...p, buckets: 60, limit: L.limit })}`)
       if (mine !== seq) return
       res = r
       shown = { from: +p.from, to: +p.to }
@@ -48,7 +48,7 @@
 
   // Reload when a filter changes (debounced), and keep a preset range moving.
   $effect(() => {
-    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.from, L.to, [...L.levels].join()]
+    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.from, L.to, [...L.levels].join(), L.limit]
     const t = setTimeout(load, 80)
     return () => clearTimeout(t)
   })
@@ -116,7 +116,7 @@
     L.group = g.fp
     picked = g
     openFirst = true
-    if (innerWidth < 1100) streamEl?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (innerWidth < 1100 || !side) streamEl?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   }
   let groupLabel = $derived.by(() => {
     if (!L.group) return ''
@@ -146,7 +146,9 @@
   function keydown(e: KeyboardEvent) {
     const tag = (document.activeElement as HTMLElement | null)?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.drawer || app.palette || e.ctrlKey || e.metaKey || e.altKey) return
-    if (e.key === '/') {
+    if (e.key === 'f') {
+      L.maxi = !L.maxi
+    } else if (e.key === '/') {
       e.preventDefault()
       search?.focus()
     } else if (e.key === 'j' || e.key === 'k') {
@@ -159,6 +161,12 @@
       next.scrollIntoView({ block: 'nearest' })
     }
   }
+
+  /** Shows 500 more of the newest lines, up to what the store returns at once. */
+  function more() {
+    L.limit = Math.min(5000, L.limit + 500)
+  }
+  let side = $derived(L.groupsAt === 'side' && L.groupsOpen && !L.maxi)
 
   const sourceLabel = (s: string) => (s.startsWith('stack:') ? `stack ${s.slice(6)}` : s)
   let soloLevels = $derived(L.levels.size < LEVELS.length)
@@ -221,12 +229,19 @@
   <div class="warn-banner"><span><b>Some logs could not be read.</b><br /><span class="muted" style="font-size:12.5px">{res.logErrors.slice(0, 3).join(' · ')}</span></span></div>
 {/if}
 
-<div class="logs-grid">
-  <section class="panel">
+<div class="logs-grid" class:side>
+  {#if L.groupsOpen && !L.maxi}
+  <section class="panel groups" class:above={!side}>
     <div class="ph">
       <h2>Error groups</h2>
       {#if groups.length}<span class="muted" style="font-size:12px">{plural(groups.length, 'group')} · {groupEvents.toLocaleString()} events</span>{/if}
+      <span class="spacer"></span>
+      <button class="ib hide-sm" onclick={() => L.setGroupsAt(side ? 'top' : 'side')}
+        title={side ? 'Put the groups above the stream, so the lines get the full width' : 'Put the groups beside the stream'}
+        aria-label={side ? 'Groups above the stream' : 'Groups beside the stream'}><Icon name={side ? 'stacked' : 'sideBySide'} size={15} /></button>
+      <button class="ib" onclick={() => L.toggleGroups()} title="Hide the error groups" aria-label="Hide the error groups"><Icon name="x" size={15} /></button>
     </div>
+    <div class="glist">
     {#each groups as g (g.fp)}
       <button class="grp" class:sel={L.group === g.fp} aria-pressed={L.group === g.fp} onclick={() => pickGroup(g)}
         title={L.group === g.fp ? 'Show all lines again' : 'Show only this group in the stream'}>
@@ -243,14 +258,23 @@
     {:else}
       <div class="empty">{res ? 'No errors match these filters.' : ''}</div>
     {/each}
+    </div>
   </section>
+  {/if}
 
-  <section class="panel" bind:this={streamEl}>
+  {#if L.maxi}<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions --><div class="scrim" onclick={() => (L.maxi = false)}></div>{/if}
+  <section class="panel streampanel" class:maxi={L.maxi} bind:this={streamEl}>
     <div class="ph">
       <h2>Log stream</h2>
       {#if res}<span class="muted" style="font-size:12px">{res.result.total.toLocaleString()} lines{#if res.result.total > res.result.entries.length} · newest {res.result.entries.length}{/if}</span>{/if}
+      {#if L.maxi}<span class="pill hide-sm">{app.active?.name}</span>{/if}
       <span class="spacer"></span>
-      <label class="toggle"><span class="switch"><input type="checkbox" bind:checked={L.collapse} /><i></i></span>Collapse repeats</label>
+      {#if !L.groupsOpen && !L.maxi}
+        <button class="btn ghost sm" onclick={() => L.toggleGroups()}>Error groups{#if groups.length}<span class="pill err" style="margin-left:4px">{groups.length}</span>{/if}</button>
+      {/if}
+      <label class="toggle"><span class="switch"><input type="checkbox" bind:checked={L.collapse} /><i></i></span><span class="hide-sm">Collapse repeats</span></label>
+      <button class="ib" onclick={() => (L.maxi = !L.maxi)} title={L.maxi ? 'Back to the page (Esc or f)' : 'Fill the window with the stream (f)'}
+        aria-label={L.maxi ? 'Back to the page' : 'Fill the window with the stream'}><Icon name={L.maxi ? 'minimize' : 'maximize'} size={15} /></button>
     </div>
     {#if L.sources.size || soloLevels || L.group || L.q}
       <div class="chiprow">
@@ -281,7 +305,10 @@
     </div>
     <div class="stream-foot">
       {#if L.live}<span class="live-dot" style="background:var(--err)"></span>Following new lines every {app.settings?.logPollSecs ?? 3} s.{:else}Updates every 15 s. Turn on Live to follow new lines.{/if}
-      <span class="spacer"></span><span class="hide-sm">j / k move · Enter expands · c copies</span>
+      {#if res && res.result.total > res.result.entries.length && L.limit < 5000}
+        <button class="btn ghost sm" onclick={more}>Show {Math.min(500, res.result.total - res.result.entries.length).toLocaleString()} more</button>
+      {/if}
+      <span class="spacer"></span><span class="hide-sm">j / k move · Enter expands · c copies · f fills the window</span>
     </div>
   </section>
 </div>

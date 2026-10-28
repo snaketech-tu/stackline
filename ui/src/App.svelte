@@ -48,6 +48,7 @@
     if (e.key === 'Escape') {
       if (app.palette) app.palette = false
       else if (app.drawer) app.drawer = null
+      else if (app.logs.maxi) app.logs.maxi = false
       return
     }
     const tag = (document.activeElement as HTMLElement | null)?.tagName
@@ -126,10 +127,13 @@
         {#if app.conn?.status === 'error'}
           <div class="err-banner"><b>Connection lost.</b><span>{app.conn.error} Showing the last known state.</span></div>
         {/if}
-        {#if app.view === 'overview'}<Overview />
-        {:else if app.view === 'nodes'}<Nodes />
-        {:else if app.view === 'stacks'}<Stacks />
-        {:else if app.view === 'logs'}<Logs />{/if}
+        <!-- Views start fresh for each connection, so nothing from another host lingers. -->
+        {#key app.activeId}
+          {#if app.view === 'overview'}<Overview />
+          {:else if app.view === 'nodes'}<Nodes />
+          {:else if app.view === 'stacks'}<Stacks />
+          {:else if app.view === 'logs'}<Logs />{/if}
+        {/key}
       {/if}
     </main>
   </div>

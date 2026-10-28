@@ -3,6 +3,28 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## Unreleased
+
+### Logs
+- The log stream now uses the full width, with the error groups above it. A layout button puts them back beside the stream, and the groups can be hidden
+- The expand button (or `f`) fills the window with the stream; Esc goes back
+- **Show more** loads older lines, up to 5,000
+
+### Service details
+- The details panel opens wide and can fill the window
+- New sections: command and entrypoint, restart policy and restarts, limits and reservations, health check with its latest results, networks, mounts, environment variables, labels, and swarm update, placement, secrets and configs
+- Values of environment variables that look like secrets (passwords, tokens, keys) are never shown, and passwords inside URLs are masked
+- The Logs tab has its own search and shows up to 5,000 lines
+
+### One host at a time
+- Stored logs are tied to the host or swarm a connection reaches. If a connection is pointed at another host, its old lines are deleted instead of showing up next to the new ones
+- Views start fresh when you switch connections, and the overview names the host its errors come from
+
+### Alerts
+- Optional notification when a connection logs too many errors: pick 5, 10 or 15 minutes and a threshold under Preferences
+- One notification per crossing; the overview shows a banner while the rate stays high
+- Native notifications in the desktop app, browser notifications in `swarmdash serve`
+
 ## 0.2.1
 
 - Apply the Stackline identity to the app header, browser favicon, and desktop icons.

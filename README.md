@@ -34,6 +34,11 @@ that opens the dashboard in your browser.
 - **Search and share logs.** Filter by service, stack, level, node or replica;
   zoom into the timeline, follow live logs, and export `.log`, `.jsonl` or `.csv`.
   Structured JSON logs include support for ECS, Logstash, Serilog, pino and zap.
+- **See how a service is set up.** Image, command, ports, networks, mounts,
+  restart policy, limits, health checks with their latest results, environment
+  variables (secret-looking values stay hidden), labels and swarm settings.
+- **Get told when errors pile up.** An optional alert sends a notification when a
+  connection logs more errors than you allow within 5 to 15 minutes.
 - **Keep logs locally.** A SQLite store retains seven days by default. Searches
   use the local store; collection resumes from the last stored timestamp.
 - **Inspect without changing workloads.** The Docker client only sends `GET`
@@ -140,6 +145,13 @@ Drag across the timeline to narrow the time range, select an error group to
 filter the stream, then expand a log entry to inspect its trace. Enable **Live**
 to follow new entries. Downloads use the current filters by default.
 
+The stream uses the full width, with the error groups above it; the layout
+button moves the groups beside it, and the expand button (or `f`) fills the
+window with the stream. **Show more** loads older lines, up to 5,000 at once.
+
+Stored logs belong to the host or swarm a connection reaches. When you point a
+connection at a different host, its old lines are deleted so the two never mix.
+
 Collection depends on the logs Docker exposes through its API. swarmdash can
 retain logs it has collected, but cannot recover logs Docker already removed
 before collection.
@@ -149,6 +161,13 @@ before collection.
 Under **Preferences**, adjust log retention, the store size limit, refresh
 intervals, CPU and memory collection, theme, and update checks. The defaults
 are seven days of logs and a 5 GiB store size limit.
+
+**Alerts** are off until you switch them on. swarmdash then counts the errors
+of every connection opened since it started, over the last 5, 10 or 15 minutes,
+and notifies you once when the count reaches your threshold. It notifies again
+only after the count dropped and at least one window has passed. The desktop
+app uses system notifications; in a browser, allow notifications for the
+swarmdash tab.
 
 swarmdash is read-only toward Docker. It writes its own settings, cached logs,
 exports and installed updates on the computer where it runs.

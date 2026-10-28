@@ -3,6 +3,7 @@
   import { api, post } from '../lib/api'
   import { ago, bytes } from '../lib/format'
   import type { Settings, StoreStats } from '../lib/types'
+  import Icon from '../components/Icon.svelte'
 
   let stats = $state<StoreStats | null>(null)
   let confirmClear = $state(false)
@@ -50,6 +51,32 @@
     }
   }
 
+  // Alerts: the desktop app shows native notifications; in a browser the page asks for permission.
+  let permission = $state(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
+  async function askPermission() {
+    if (typeof Notification === 'undefined' || app.alertsNative) return
+    try {
+      permission = await Notification.requestPermission()
+    } catch {
+      permission = Notification.permission
+    }
+  }
+  async function setAlerts(on: boolean) {
+    if (on) await askPermission()
+    await set('alertEnabled', on)
+  }
+  async function testAlert() {
+    try {
+      const r = await post<{ native: boolean }>('/alerts/test', {})
+      if (r.native) return app.notify('Test notification sent.')
+      await askPermission()
+      if (permission !== 'granted') return app.notify('The browser blocks notifications for this page. Allow them in the site settings.', 'err')
+      new Notification('Errors on your server', { body: `This is how swarmdash tells you about ${s!.alertThreshold} or more errors in ${s!.alertWindowMins} minutes.` })
+    } catch (e) {
+      app.notify(app.describe(e), 'err')
+    }
+  }
+
   const num = (e: Event) => Number((e.target as HTMLSelectElement).value)
   const on = (e: Event) => (e.target as HTMLInputElement).checked
   const THEMES: [Theme, string][] = [['system', 'System'], ['light', 'Light'], ['dark', 'Dark']]
@@ -70,6 +97,41 @@
       </span>
       <span class="d">Follows your system until you pick light or dark. The button in the top bar switches it too.</span>
     </div>
+  </section>
+
+  <section class="panel">
+    <div class="ph"><h2>Alerts</h2></div>
+    <div class="set">
+      <label class="l" for="pref-alertEnabled">Notify me when the error rate is high</label>
+      <span class="c">
+        <span class="saved" class:on={saved === 'alertEnabled'}>Saved</span>
+        <span class="switch"><input type="checkbox" id="pref-alertEnabled" checked={s.alertEnabled} onchange={(e) => setAlerts(on(e))} /><i></i></span>
+      </span>
+      <span class="d">
+        Counts the errors each connection logged and sends one notification when the count reaches the threshold, then waits until it drops again.
+        Covers every connection you opened since swarmdash started, and only reads the logs stored on this computer.
+        {#if !app.alertsNative}
+          {#if permission === 'denied'}<b style="color:var(--err)">This browser blocks notifications for swarmdash. Allow them in the site settings; until then alerts only show inside the page.</b>
+          {:else if permission === 'unsupported'}This browser cannot show notifications, so alerts show inside the page.
+          {:else}Notifications show while swarmdash is open in a browser tab.{/if}
+        {/if}
+      </span>
+    </div>
+    {#if s.alertEnabled}
+      {@render select('alertThreshold', 'Notify at', 'Errors in the window that trigger the notification.', opts([5, 10, 20, 50, 100, 250, 500, 1000], s.alertThreshold), (n) => `${n} errors`)}
+      {@render select('alertWindowMins', 'Count errors over the last', '', opts([5, 10, 15], s.alertWindowMins), (m) => `${m} minutes`)}
+      <div class="set">
+        <span class="l">Test</span>
+        <span class="c"><button class="btn" onclick={testAlert}><Icon name="bell" size={14} />Send a test notification</button></span>
+        <span class="d">
+          {#each app.alerts as a (a.conn)}
+            <span style="display:block">{a.name}: {a.count} {a.count === 1 ? 'error' : 'errors'} in the last {a.windowMins} minutes{#if a.active}{' · '}<b style="color:var(--err)">over the threshold</b>{/if}</span>
+          {:else}
+            No connection checked yet.
+          {/each}
+        </span>
+      </div>
+    {/if}
   </section>
 
   <section class="panel">
@@ -118,7 +180,7 @@
   <div class="center-empty"><span class="spinner"></span></div>
 {/if}
 
-{#snippet select(key: 'retentionDays' | 'maxStoreMb' | 'logPollSecs' | 'refreshSecs', label: string, desc: string, list: number[], fmt: (v: number) => string)}
+{#snippet select(key: 'retentionDays' | 'maxStoreMb' | 'logPollSecs' | 'refreshSecs' | 'alertThreshold' | 'alertWindowMins', label: string, desc: string, list: number[], fmt: (v: number) => string)}
   <div class="set">
     <label class="l" for="pref-{key}">{label}</label>
     <span class="c">

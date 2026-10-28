@@ -11,6 +11,12 @@ export function dayHhmm(t: number, span: number): string {
   return `${d.toLocaleDateString(undefined, { weekday: 'short' })} ${hhmm(t)}`
 }
 
+/** `2026-10-27 08:30`, in local time. */
+export function dateTime(t: number): string {
+  const d = new Date(t)
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${hhmm(t)}`
+}
+
 export function hms(t: number): string {
   const d = new Date(t)
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`

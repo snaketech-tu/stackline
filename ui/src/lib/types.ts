@@ -3,7 +3,7 @@
 export type Level = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
 
 export interface Host {
-  name: string; os: string; kernel: string; dockerVersion: string; apiVersion: string
+  id: string; clusterId: string | null; name: string; os: string; kernel: string; dockerVersion: string; apiVersion: string
   ncpu: number; memTotal: number; containersRunning: number; containersTotal: number; images: number
   swarmState: string; isManager: boolean; cpuPercent: number | null; memUsed: number | null
 }
@@ -47,6 +47,7 @@ export type Connection =
 export interface Settings {
   theme: 'system' | 'light' | 'dark'; retentionDays: number; maxStoreMb: number
   refreshSecs: number; logPollSecs: number; collectStats: boolean; checkUpdates: boolean
+  alertEnabled: boolean; alertWindowMins: number; alertThreshold: number
 }
 
 export interface Meta { version: string; desktop: boolean; storePath: string; platform: string }
@@ -80,6 +81,27 @@ export interface UpdateState {
   current: string; phase: UpdatePhase; releases: Release[]; checkedAt: number | null; error: string | null
   received: number; total: number | null; canInstall: boolean; installHint: string | null; releasesUrl: string
 }
+
+export interface EnvVar { name: string; value: string | null }
+export interface Mount { kind: string; source: string; target: string; readOnly: boolean }
+export interface Network { name: string; ip: string | null; aliases: string[] }
+export interface HealthRun { at: number | null; exitCode: number; output: string }
+export interface ServiceDetails {
+  image: string; created: number | null; updated: number | null; started: number | null
+  command: string | null; entrypoint: string | null; workdir: string | null; user: string | null; hostname: string | null
+  env: EnvVar[]; labels: [string, string][]; mounts: Mount[]; networks: Network[]; ports: string[]
+  restart: string | null; restartCount: number | null; oomKilled: boolean; limits: string | null; reservations: string | null
+  healthcheck: string | null; healthLog: HealthRun[]; updateConfig: string | null; rollbackConfig: string | null
+  placement: string[]; secrets: string[]; configs: string[]; logDriver: string | null; stopGrace: string | null
+  container: string | null
+}
+
+export interface Alert {
+  conn: string; name: string; active: boolean; count: number; windowMins: number; threshold: number
+  /** Unix ms */
+  since: number | null; notifiedAt: number | null; seq: number; top: string | null; topService: string | null
+}
+export interface AlertsResponse { alerts: Alert[]; native: boolean }
 
 /** A service together with the stack it belongs to. */
 export interface ServiceRef extends Service { kind: Stack['kind']; key: string }

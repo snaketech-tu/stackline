@@ -125,7 +125,11 @@ tbody tr.click:hover td{background:var(--panel-2)}
 .legend span{display:inline-flex;align-items:center;gap:6px}
 .legend i{width:10px;height:10px;border-radius:2px;display:inline-block}
 .legend i.line{height:2px;border-radius:0}
-.logs-grid{display:grid;grid-template-columns:minmax(0,400px) minmax(0,1fr);gap:18px;align-items:start}
+.logs-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:18px;align-items:start}
+.logs-grid.side{grid-template-columns:minmax(0,400px) minmax(0,1fr)}
+.groups.above .glist{max-height:236px;overflow:auto}
+.streampanel.maxi{position:fixed;inset:12px;z-index:21;display:flex;flex-direction:column;overflow:hidden;margin:0}
+.streampanel.maxi .stream{flex:1;overflow:auto}
 .grp{all:unset;box-sizing:border-box;width:100%;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:4px 10px;padding:11px 16px;border-bottom:1px solid var(--line);cursor:pointer;align-items:center}
 .grp:last-child{border-bottom:0}
 .grp:hover{background:var(--panel-2)}
@@ -189,7 +193,7 @@ code.cmd{display:block;font-family:var(--mono);font-size:12px;padding:8px 10px;b
 .arch{display:grid;gap:8px;font-size:13.5px;max-width:75ch}
 .arch li{margin-bottom:4px}
 .tag-proposal{font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--exc);border:1px solid color-mix(in srgb,var(--exc) 40%,transparent);padding:1px 8px;border-radius:10px}
-@media (max-width:1100px){.logs-grid{grid-template-columns:minmax(0,1fr)}.grid2{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:1100px){.logs-grid.side{grid-template-columns:minmax(0,1fr)}.grid2{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:900px){.kpis{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:760px){
   .app{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
@@ -499,3 +503,21 @@ tr.editrow>td{background:var(--panel-2);padding:16px 18px}
   .drawer .stream .row{grid-template-columns:70px 44px minmax(0,1fr)}
 }
 .drawer .dh .pin{opacity:1}
+/* service details */
+.drawer.wide{width:min(1100px,calc(100% - 48px))}
+.drawer.full{width:100%}
+.dsec{display:grid;gap:8px}
+.dsec h4{display:flex;align-items:center;gap:8px;margin:0}
+.dsec h4 .n{font-family:var(--mono);font-weight:500;letter-spacing:0;text-transform:none}
+.kv dd.wrap{white-space:pre-wrap}
+.kv dd .hid{color:var(--muted);font-style:italic;font-family:inherit}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chips .pill{font-family:var(--mono);font-size:11.5px}
+.hlog{display:grid;gap:4px;font-size:12px}
+.hlog div{display:grid;grid-template-columns:70px 44px minmax(0,1fr);gap:8px;align-items:baseline}
+.hlog pre{margin:0;font-family:var(--mono);font-size:11.5px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--muted)}
+.drawer .search{max-width:none;flex:1 1 220px}
+.alert-banner{align-items:center;white-space:normal}
+.alert-banner svg{color:var(--err);flex:none}
+.alert-banner .why{display:block;font-size:12px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:80ch}
+.alert-banner>span{min-width:0}

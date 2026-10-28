@@ -4,7 +4,8 @@
 import { SvelteSet } from 'svelte/reactivity'
 import { ApiError, api, post, put } from './api'
 import type {
-  ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse, UpdateState,
+  Alert, AlertsResponse, ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  UpdateState,
 } from './types'
 
 export type View = 'overview' | 'nodes' | 'stacks' | 'logs' | 'connections' | 'prefs'
@@ -64,6 +65,13 @@ class LogsState {
   live = $state(false)
   collapse = $state(true)
   openRows = new SvelteSet<number>()
+  /** How many of the newest lines the stream shows. "Show more" raises it. */
+  limit = $state(300)
+  /** Error groups above the stream (it gets the full width) or beside it. */
+  groupsAt = $state<'top' | 'side'>(load('swarmdash-groups-at') === 'side' ? 'side' : 'top')
+  groupsOpen = $state(load('swarmdash-groups-open') !== '0')
+  /** The stream fills the window. */
+  maxi = $state(false)
 
   /** Where `auto` starts: the oldest stored line, within the retention, at least 15 minutes back. */
   autoFrom: () => number
@@ -91,6 +99,16 @@ class LogsState {
     if (stacks.length) p.stack = stacks.join(',')
     if (services.length) p.service = services.join(',')
     return p
+  }
+
+  setGroupsAt(v: 'top' | 'side') {
+    this.groupsAt = v
+    save('swarmdash-groups-at', v)
+  }
+
+  toggleGroups() {
+    this.groupsOpen = !this.groupsOpen
+    save('swarmdash-groups-open', this.groupsOpen ? '1' : '0')
   }
 
   setPreset(p: Preset) {
@@ -131,6 +149,8 @@ class LogsState {
     this.group = null
     this.openRows.clear()
     this.live = false
+    this.limit = 300
+    this.maxi = false
     this.setPreset('auto')
   }
 }
@@ -165,7 +185,13 @@ class AppState {
     return Math.max(keep, oldest)
   })
 
+  /** Error-rate alerts of every opened connection. */
+  alerts = $state<Alert[]>([])
+  /** The desktop app shows alerts as native notifications; a browser tab shows them itself. */
+  alertsNative = $state(false)
+
   active = $derived(this.connections.find((c) => c.id === this.activeId))
+  activeAlert = $derived(this.alerts.find((a) => a.conn === this.activeId && a.active))
 
   services: ServiceRef[] = $derived(
     (this.snap?.stacks ?? []).flatMap((st) => st.services.map((s) => ({ ...s, kind: st.kind, key: pinKey(s) }))),
@@ -204,7 +230,59 @@ class AppState {
     }
     this.loadUpdate()
     this.poll()
+    this.loadAlerts()
+    setInterval(() => this.loadAlerts(), 15000)
   }
+
+  // ---- error-rate alerts ----
+
+  /** The newest notification seen per connection; undefined until the first load. */
+  #seen: Map<string, number> | undefined
+
+  async loadAlerts() {
+    let r: AlertsResponse
+    try {
+      r = await api<AlertsResponse>('/alerts')
+    } catch {
+      return
+    }
+    this.alerts = r.alerts
+    this.alertsNative = r.native
+    const first = !this.#seen
+    const seen = (this.#seen ??= new Map())
+    for (const a of r.alerts) {
+      const was = seen.get(a.conn) ?? 0
+      seen.set(a.conn, a.seq)
+      // On the first load only alerts from the last minute are news.
+      if (a.seq <= was || (first && (!a.notifiedAt || Date.now() - a.notifiedAt > 60e3))) continue
+      this.announce(a)
+    }
+  }
+
+  announce(a: Alert) {
+    const text = `${a.count} errors in the last ${a.windowMins} minutes on ${a.name}.`
+    this.notify(text, 'err')
+    if (this.alertsNative || typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    try {
+      const body = `${text}${a.top ? `\nMost frequent: ${a.top}${a.topService ? ` (${a.topService})` : ''}` : ''}`
+      const n = new Notification(`Errors on ${a.name}`, { body, tag: `swarmdash-${a.conn}` })
+      n.onclick = () => {
+        window.focus()
+        this.openAlert(a)
+        n.close()
+      }
+    } catch {
+      // Some browsers only allow notifications from a service worker; the toast is shown anyway.
+    }
+  }
+
+  /** Shows the errors behind an alert: its connection, errors only, over the alert's window. */
+  openAlert(a: Alert) {
+    this.select(a.conn)
+    this.showLogs([], ['ERROR'])
+    this.logs.setPreset('15m')
+  }
+
 
   describe(e: unknown): string {
     if (e instanceof ApiError && e.status === 401)
