@@ -57,7 +57,14 @@
     return out
   })
 
+  // A pasted log link (from Copy link on the Logs page) opens its view.
+  let pastedLink = $derived(/#logs\?\S*/.exec(q.trim())?.[0])
+
   let items = $derived.by(() => {
+    if (pastedLink) {
+      const hash = pastedLink
+      return [{ kind: 'Link', label: 'Open this log link', text: hash, right: '', run: () => { app.openLink(new URLSearchParams(hash.slice(hash.indexOf('?') + 1))); app.go('logs') } } satisfies Item]
+    }
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
     if (!words.length) {
       const top = all.filter((x) => x.kind === 'Service' && (x.right.includes('★') || /^0\/[1-9]/.test(x.right)))
