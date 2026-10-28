@@ -6,7 +6,8 @@ its GitHub release, and swarmdash shows it in the update dialog.
 ## Unreleased
 
 ### Changed
-- New installs keep logs for 2 days, in at most 1 GB, instead of 7 days and 5 GB. Debugging is mostly about the last hours, and a week of every service of a big stack costs a lot of disk and a long first read. Existing installs keep their settings. Preferences now also offer 1 and 2 days and 512 MB
+- New installs keep logs for 2 days, in at most 1 GB, instead of 7 days and 5 GB. Debugging is mostly about the last hours, and a week of every service of a big stack costs a lot of disk and a long first read. Existing installs keep their settings. Preferences now also offer 1 and 2 days and 512 MB.
+- A replica swarmdash sees for the first time is read 6 hours back, not the whole retention, so opening a big stack no longer starts with a long read. Lines from then on are kept for the full retention, and "Clear stored logs" still reads the whole retention again.
 
 ## 0.4.0
 

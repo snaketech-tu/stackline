@@ -25,6 +25,10 @@ const BATCH: usize = 2000;
 /// replica that wrote more since the last poll is asked again for more.
 const TAIL_MIN: usize = 1000;
 const TAIL_MAX: usize = 100_000;
+/// How far back a replica seen for the first time is read. Reading the whole
+/// retention of every replica of a big stack at once is slow and fills the
+/// store with lines nobody asked for; newer lines are kept from then on.
+const FIRST_READ_US: i64 = 6 * 3_600_000_000;
 
 struct SourceState {
     src: LogSource,
@@ -37,6 +41,8 @@ struct SourceState {
     tail: usize,
     /// The store's epoch when this read started; see [`Store::epoch`].
     epoch: u64,
+    /// The first read goes back the whole retention, not [`FIRST_READ_US`].
+    refill: bool,
 }
 
 pub struct Collector {
@@ -59,13 +65,15 @@ impl Collector {
         Self { conn: conn.to_string(), store, states: HashMap::new(), epoch }
     }
 
-    /// Reads new lines from every source. `retention_us` bounds the first read of a new source.
+    /// Reads new lines from every source. The first read of a new source goes
+    /// back [`FIRST_READ_US`], at most `retention_us`.
     pub async fn poll(&mut self, client: &DockerClient, sources: Vec<LogSource>, retention_us: i64) -> PollReport {
         let now = chrono::Utc::now().timestamp_micros();
         // After "Clear stored logs" every source is read again from the
         // start of the retention, so the cleared range fills up again.
         let epoch = self.store.epoch();
-        if epoch != self.epoch {
+        let refill = epoch != self.epoch;
+        if refill {
             self.states.clear();
             self.epoch = epoch;
         }
@@ -79,6 +87,7 @@ impl Collector {
                 error: None,
                 tail: TAIL_MIN,
                 epoch,
+                refill,
                 src: src.clone(),
             });
             // A container that just stopped is read right away: its last
@@ -144,12 +153,13 @@ async fn read_source(
     now: i64,
     retention_us: i64,
 ) -> Result<usize> {
-    let since_us = st.cursor.map(|c| c + 1).unwrap_or(now - retention_us);
+    let first = if st.refill { retention_us } else { retention_us.min(FIRST_READ_US) };
+    let since_us = st.cursor.map(|c| c + 1).unwrap_or(now - first);
     let since = format!("{}.{:06}000", since_us.div_euclid(1_000_000), since_us.rem_euclid(1_000_000));
     let kind = if st.src.via_task { "tasks" } else { "containers" };
     let path = format!("/{kind}/{}/logs?stdout=1&stderr=1&timestamps=1&since={since}", st.src.key);
     if st.cursor.is_none() {
-        // The first read of a replica: everything within the retention.
+        // The first read of a replica: everything since `first`.
         return read_stream(client, store, conn, st, &path, Duration::from_secs(600), now).await;
     }
     // Docker reads the newest `tail` lines from the end of the file and keeps
@@ -429,6 +439,35 @@ mod tests {
         assert_eq!(r.entries, 5, "{r:?}");
         assert!(!docker.paths()[0].contains("tail="));
         assert_eq!(stored(&store), 5);
+    }
+
+    #[tokio::test]
+    async fn a_new_replica_is_read_6_hours_back_and_a_clear_refills_the_retention() {
+        let docker = FakeDocker::start().await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let now = chrono::Utc::now().timestamp_micros();
+        docker.write(now - 2 * 86_400_000_000, "INFO two days ago");
+        docker.write(now - 7 * 3_600_000_000, "INFO seven hours ago");
+        docker.write(now - 60_000_000, "INFO a minute ago");
+        let mut c = Collector::new("conn", store.clone());
+
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!(r.entries, 1, "{r:?}");
+        let since = param(&docker.paths()[0], "since").unwrap();
+        let since_s: i64 = since.split('.').next().unwrap().parse().unwrap();
+        assert!((now - FIRST_READ_US) / 1_000_000 - since_s <= 1, "{since}");
+
+        // "Clear stored logs" reads the whole retention again.
+        store.clear(None).unwrap();
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!(r.entries, 3, "{r:?}");
+
+        // A replica that starts after that is read 6 hours back again.
+        let mut other = source();
+        other.key = "c2".into();
+        let r = c.poll(&docker.client(), vec![source(), other], RETENTION).await;
+        assert_eq!(r.entries, 1, "{r:?}");
+        assert_eq!(stored(&store), 4);
     }
 
     #[tokio::test]
