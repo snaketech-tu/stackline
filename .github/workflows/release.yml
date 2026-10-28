@@ -1,6 +1,7 @@
 name: Release
 
-# Push a tag like v0.2.0 to build and publish a release. The release stays a
+# Push a tag like v0.2.0 (or publish a release with a new tag on the GitHub
+# website) to build and publish a release. The release stays a
 # draft until every download is uploaded, so update checks never see a
 # release with missing files.
 
@@ -42,7 +43,7 @@ jobs:
         with:
           script: |
             const tag = context.ref.replace('refs/tags/', '')
-            const { data } = await github.rest.repos.createRelease({
+            const release = {
               owner: context.repo.owner,
               repo: context.repo.repo,
               tag_name: tag,
@@ -50,7 +51,17 @@ jobs:
               body: require('fs').readFileSync('notes.md', 'utf8'),
               draft: true,
               prerelease: tag.includes('-'),
-            })
+            }
+            // A release made on the GitHub website creates the tag too. Turn it
+            // back into a draft until every download is uploaded.
+            const existing = await github.rest.repos
+              .getReleaseByTag({ owner: release.owner, repo: release.repo, tag })
+              .catch((e) => (e.status === 404 ? null : Promise.reject(e)))
+            if (existing) {
+              const { data } = await github.rest.repos.updateRelease({ ...release, release_id: existing.data.id })
+              return data.id
+            }
+            const { data } = await github.rest.repos.createRelease(release)
             return data.id
 
   # Single binaries for `swarmdash serve`. Each one is signed so that

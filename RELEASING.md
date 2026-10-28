@@ -44,6 +44,13 @@ next version by hand.
    git push origin main v0.2.0
    ```
 
+   Without a terminal, use the GitHub website instead: **Releases → Draft a
+   new release**, type the new tag (for example `v0.2.0`), choose
+   **Create new tag on publish** with target `main`, and click **Publish
+   release**. Title and notes can stay empty. The workflow turns the release
+   back into a draft, fills in the notes from `CHANGELOG.md`, uploads the
+   downloads and publishes it again.
+
 The release workflow stops early if the tag and `Cargo.toml` disagree, if the
 changelog has no section for the version, or if the signing key is missing.
 
