@@ -4,8 +4,9 @@
 import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
 import { ApiError, api, post, put, type LogParams } from './api'
+import { beforeEvent } from './events'
 import type {
-  Alert, AlertsResponse, Collect, ConnState, Connection, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  Alert, AlertsResponse, Collect, ConnState, Connection, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
 } from './types'
 
@@ -352,6 +353,17 @@ class AppState {
     this.logs.sources.clear()
     const now = Date.now()
     this.logs.zoom(now - a.windowMins * 60e3, now)
+  }
+
+  /**
+   * The lines a replica printed in the 2 minutes before it stopped or
+   * crashed: usually where the reason is.
+   */
+  showEvent(e: DockerEvent) {
+    this.showLogs([e.service])
+    const [from, to] = beforeEvent(e)
+    this.logs.zoom(from, to)
+    this.logs.q = `replica:${e.replica}`
   }
 
   /** The stored range of the active connection: at most `max` ms back, at least 15 minutes. */

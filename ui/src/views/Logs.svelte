@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onDestroy } from 'svelte'
   import { app, LEVELS, LINES, PRESETS, type Preset } from '../lib/state.svelte'
-  import { api, fetchLogs, keepEntries } from '../lib/api'
+  import { api, fetchEvents, fetchLogs, keepEntries } from '../lib/api'
   import { ago, bytes, firstLine, hhmm, patternParts, plural, searchTerms } from '../lib/format'
-  import type { Entry, Group, Level, LogResponse, StoreStats } from '../lib/types'
+  import type { DockerEvent, Entry, Group, Level, LogResponse, StoreStats } from '../lib/types'
+  import { isCrash } from '../lib/events'
   import Histogram from '../components/Histogram.svelte'
   import Icon from '../components/Icon.svelte'
   import LogRow from '../components/LogRow.svelte'
@@ -17,6 +18,7 @@
 
   // Replaced as a whole on every load, so it needs no deep reactivity.
   let res = $state.raw<LogResponse | null>(null)
+  let events = $state.raw<DockerEvent[]>([])
   let shown = $state({ from: 0, to: 0 })
   let loading = $state(false)
   let error = $state<string | null>(null)
@@ -34,9 +36,11 @@
     const mine = ++seq
     loading = true
     try {
-      const r = await fetchLogs(id, { ...p, buckets: 60, limit: L.limit })
+      // Events are a side note: the lines show even when they cannot be read.
+      const [r, ev] = await Promise.all([fetchLogs(id, { ...p, buckets: 60, limit: L.limit }), fetchEvents(id, p).catch(() => [])])
       if (mine !== seq) return
       res = keepEntries(res, r)
+      events = ev
       shown = { from: p.from, to: p.to }
       error = null
       if (openFirst && r.result.entries[0]) L.openRows.add(r.result.entries[0].id)
@@ -97,6 +101,7 @@
   }
 
   let terms = $derived(searchTerms(L.q))
+  let crashes = $derived(events.filter(isCrash).length)
 
   type Row = { e: Entry; n: number }
   /** The rows of the last result, to hand unchanged rows back as the same objects. */
@@ -238,10 +243,13 @@
       <span><i style="background:var(--err)"></i>Error</span><span><i style="background:var(--warn)"></i>Warn</span>
       <span><i style="background:var(--info);opacity:.6"></i>Info</span><span><i style="background:var(--dbg);opacity:.6"></i>Debug</span>
       <span><i class="line" style="background:var(--exc)"></i>Exceptions</span>
+      {#if events.length}
+        <span title="Containers that started, stopped, crashed or failed a health check in this range"><i class="mark" style="background:var(--err)"></i>{crashes ? plural(crashes, 'crash', 'crashes') : 'Starts and stops'}</span>
+      {/if}
     </div>
   </div>
   {#if res}
-    <Histogram buckets={res.result.histogram} from={shown.from} to={shown.to} onrange={(a, z) => L.zoom(a, z)} />
+    <Histogram buckets={res.result.histogram} from={shown.from} to={shown.to} marks={events} onrange={(a, z) => L.zoom(a, z)} />
   {:else}
     <div class="center-empty" style="padding:70px"><span class="spinner"></span></div>
   {/if}

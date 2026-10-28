@@ -15,6 +15,7 @@ pub mod collector;
 pub mod config;
 pub mod details;
 pub mod docker;
+pub mod events;
 pub mod logs;
 pub mod model;
 pub mod runtime;
