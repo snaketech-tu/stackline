@@ -19,6 +19,9 @@
   }
 
   onMount(() => {
+    // Live at the end of the page, so no card or panel can be painted over the menu
+    // (the blurred top bar would otherwise trap it in its own layer).
+    if (el) document.body.appendChild(el)
     place()
     const away = (e: PointerEvent) => {
       if (el && !el.contains(e.target as Node) && !anchor.contains(e.target as Node)) onclose()
@@ -37,10 +40,14 @@
       document.removeEventListener('pointerdown', away, true)
       document.removeEventListener('keydown', key, true)
       window.removeEventListener('resize', place)
+      el?.remove()
     }
   })
 </script>
 
-<div class="pop" role="menu" aria-label={label} bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px">
-  {@render children()}
+<!-- The menu itself moves to the end of the page; this wrapper stays where Svelte expects it. -->
+<div style="display:contents">
+  <div class="pop" role="menu" aria-label={label} bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px">
+    {@render children()}
+  </div>
 </div>

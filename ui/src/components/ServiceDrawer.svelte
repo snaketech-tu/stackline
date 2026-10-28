@@ -1,5 +1,6 @@
 <script lang="ts">
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
+  import { untrack } from 'svelte'
   import { SvelteSet } from 'svelte/reactivity'
   import { app, LEVELS, load, save, type ServiceTab } from '../lib/state.svelte'
   import { api, query } from '../lib/api'
@@ -15,6 +16,8 @@
 
   let { key, tab }: { key: string; tab: ServiceTab } = $props()
   let s = $derived(app.services.find((x) => x.key === key))
+  // A plain string, so effects that read it do not rerun on every snapshot (each one brings new service objects).
+  let name = $derived(s?.fullName)
   let failing = $derived(!!s && s.running === 0 && s.desired > 0)
   let errs = $derived(s ? (app.errors?.byService[s.fullName] ?? 0) : 0)
 
@@ -41,7 +44,6 @@
   let details = $state<ServiceDetails | null>(null)
   let detailsError = $state<string | null>(null)
   $effect(() => {
-    const name = s?.fullName
     const id = app.activeId
     if (!name) return
     const get = () =>
@@ -69,7 +71,6 @@
 
   // Errors and groups: for the overview and errors tabs.
   $effect(() => {
-    const name = s?.fullName
     void app.snap?.fetchedAt
     if (!name) return
     const r = range(6 * 3600e3)
@@ -82,22 +83,29 @@
   })
 
   // Lines: the logs tab, and the newest line for a failing service.
+  let linesSeq = 0
   $effect(() => {
-    const name = s?.fullName
-    if (!name || (tab !== 'logs' && !failing)) return
+    const svc = name
+    if (!svc || (tab !== 'logs' && !failing)) return
+    const id = app.activeId
     const lv = tab === 'logs' ? [...levels].join(',') : LEVELS.join(',')
     const filter = tab === 'logs' ? [replica ? `replica:${replica}` : '', q].filter(Boolean).join(' ') : ''
     const n = tab === 'logs' ? limit : 1
+    const mine = ++linesSeq
     const get = () => {
       const r = range(24 * 3600e3)
-      api<LogResponse>(`/c/${encodeURIComponent(app.activeId)}/logs?${query({ ...r, service: name, levels: lv, q: filter, buckets: 1, limit: n })}`)
-        .then((x) => (lines = x))
+      api<LogResponse>(`/c/${encodeURIComponent(id)}/logs?${query({ ...r, service: svc, levels: lv, q: filter, buckets: 1, limit: n })}`)
+        // A slow answer for filters that changed since must not replace the current one.
+        .then((x) => mine === linesSeq && (lines = x))
         .catch(() => {})
     }
-    get()
-    const t = setInterval(get, Math.max(2, app.settings?.logPollSecs ?? 3) * 1000)
+    untrack(get)
+    // Big pages refresh less often; the newest lines still show up within 15 seconds.
+    const every = n > 500 ? 15000 : Math.max(2, untrack(() => app.settings?.logPollSecs) ?? 3) * 1000
+    const t = setInterval(() => !document.hidden && get(), every)
     return () => clearInterval(t)
   })
+  let terms = $derived(searchTerms(q))
 
   let newest = $derived(lines?.result.entries[0])
   let groups = $derived(hist?.result.groups ?? [])
@@ -158,7 +166,7 @@
   {/snippet}
   {#snippet tabs()}
     {#each [['overview', 'Overview'], ['logs', 'Logs'], ['errors', 'Errors']] as [k, label] (k)}
-      <button role="tab" aria-selected={tab === k} onclick={() => setTab(k as ServiceTab)}>{label}{#if k === 'errors' && errs}<span class="n">{errs}</span>{/if}</button>
+      <button role="tab" aria-selected={tab === k} onclick={() => setTab(k as ServiceTab)}>{label}{#if k === 'errors' && errs}<span class="n" title="Errors in the last hour">{errs.toLocaleString()}</span>{/if}</button>
     {/each}
   {/snippet}
   {#snippet foot()}
@@ -334,7 +342,7 @@
     <div class="boxed">
       <div class="stream">
         {#each lines?.result.entries ?? [] as e (e.id)}
-          <LogRow {e} service={false} terms={searchTerms(q)} open={openRows.has(e.id)} ontoggle={() => (openRows.has(e.id) ? openRows.delete(e.id) : openRows.add(e.id))} />
+          <LogRow {e} service={false} {terms} open={openRows.has(e.id)} ontoggle={() => (openRows.has(e.id) ? openRows.delete(e.id) : openRows.add(e.id))} />
         {:else}
           <div class="empty">{lines ? 'No lines stored for this service yet.' : ''}</div>
         {/each}
@@ -347,16 +355,16 @@
     {/if}
   {:else}
     {#each groups as g (g.fp)}
-      <div class="boxed" style="padding:12px 14px;display:grid;gap:8px">
-        <div style="display:flex;gap:10px;align-items:center;min-width:0">
-          <span class="grp" style="all:unset"><span class="count" class:w={g.level === 'WARN'} style="font-family:var(--mono);font-weight:700;font-size:12px;padding:2px 8px;border-radius:7px">{g.count}</span></span>
-          <b class="mono" style="font-size:12px;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title={g.pattern}>{#each patternParts(g.pattern || firstLine(g.sample)) as part, i (i)}{part.text}{/each}</b>
-          <span class="spacer"></span><Spark values={g.spark} warn={g.level === 'WARN'} />
+      <div class="ecard">
+        <div class="eh">
+          <span class="ecount" class:w={g.level === 'WARN'}>{g.count.toLocaleString()}</span>
+          <span class="ettl">{#each patternParts(g.pattern || firstLine(g.sample)) as part, i (i)}{#if part.v}<var>{part.text}</var>{:else}{part.text}{/if}{/each}</span>
+          <Spark values={g.spark} warn={g.level === 'WARN'} />
         </div>
-        <span class="muted" style="font-size:12px">{g.exc ? 'exception' : g.level === 'WARN' ? 'warning' : 'log error'} · first {ago(g.first / 1000, app.now)} · last {ago(g.last / 1000, app.now)} · {g.sources} {g.sources === 1 ? 'container' : 'containers'}</span>
+        <span class="muted emeta">{g.exc ? 'exception' : g.level === 'WARN' ? 'warning' : 'log error'} · first {ago(g.first / 1000, app.now)} · last {ago(g.last / 1000, app.now)} · {g.sources} {g.sources === 1 ? 'container' : 'containers'}</span>
         <pre class="trace" class:plain={g.level !== 'ERROR'}>{#each g.sample.split('\n') as l, i (i)}{#if i === 0}<b>{l}</b>{:else}{'\n'}<span class="fr">{l}</span>{/if}{/each}</pre>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn sm" onclick={() => { app.showGroup(g.fp); app.logs.sources.add(s!.fullName) }}>Show all {g.count} in Logs</button>
+        <div class="eacts">
+          <button class="btn sm" onclick={() => { app.showGroup(g.fp); app.logs.sources.add(s!.fullName) }}>Show all {g.count.toLocaleString()} in Logs</button>
           <button class="btn ghost sm" onclick={() => app.copy(g.sample)}><Icon name="copy" size={13} />Copy {g.exc ? 'stack trace' : 'message'}</button>
         </div>
       </div>

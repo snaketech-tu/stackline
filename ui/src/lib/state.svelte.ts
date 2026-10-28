@@ -260,9 +260,9 @@ class AppState {
   }
 
   announce(a: Alert) {
-    const text = `${a.count} errors in the last ${a.windowMins} minutes on ${a.name}.`
+    const text = `${a.count} ${a.count === 1 ? 'error' : 'errors'} in the last ${a.windowMins} minutes on ${a.name}.`
     this.notify(text, 'err')
-    if (this.alertsNative || typeof Notification === 'undefined' || Notification.permission !== 'granted') return
+    if (this.alertsNative || this.meta?.desktop || typeof Notification === 'undefined' || Notification.permission !== 'granted') return
     try {
       const body = `${text}${a.top ? `\nMost frequent: ${a.top}${a.topService ? ` (${a.topService})` : ''}` : ''}`
       const n = new Notification(`Errors on ${a.name}`, { body, tag: `swarmdash-${a.conn}` })

@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS entries (
     text TEXT NOT NULL,
     raw TEXT
 );
-CREATE INDEX IF NOT EXISTS entries_conn_ts ON entries (conn, ts);
+-- Covers the time graph and level counts, so they never read the rows themselves.
+CREATE INDEX IF NOT EXISTS entries_conn_ts_level ON entries (conn, ts, level, exc);
+DROP INDEX IF EXISTS entries_conn_ts;
+-- Only lines that belong to an error group, with what the group list needs.
+CREATE INDEX IF NOT EXISTS entries_conn_ts_fp ON entries (conn, ts, fp, level, exc, service, node, source) WHERE fp IS NOT NULL;
 CREATE INDEX IF NOT EXISTS entries_conn_fp ON entries (conn, fp, ts) WHERE fp IS NOT NULL;
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5 (text, content = 'entries', content_rowid = 'id', tokenize = 'trigram');
 CREATE TRIGGER IF NOT EXISTS entries_ai AFTER INSERT ON entries BEGIN
@@ -225,6 +229,28 @@ pub struct Bucket {
     pub exc: u64,
 }
 
+impl LevelCounts {
+    fn get_mut(&mut self, l: Level) -> &mut u64 {
+        match l {
+            Level::Error => &mut self.error,
+            Level::Warn => &mut self.warn,
+            Level::Info => &mut self.info,
+            Level::Debug => &mut self.debug,
+        }
+    }
+}
+
+impl Bucket {
+    fn get_mut(&mut self, l: Level) -> &mut u64 {
+        match l {
+            Level::Error => &mut self.error,
+            Level::Warn => &mut self.warn,
+            Level::Info => &mut self.info,
+            Level::Debug => &mut self.debug,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Group {
@@ -352,7 +378,10 @@ impl Store {
                 "INSERT INTO entries (conn, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             )?;
-            let mut pat = tx.prepare_cached("INSERT OR REPLACE INTO patterns (conn, fp, pattern) VALUES (?1, ?2, ?3)")?;
+            let mut pat = tx.prepare_cached(
+                "INSERT INTO patterns (conn, fp, pattern) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (conn, fp) DO UPDATE SET pattern = excluded.pattern WHERE pattern != excluded.pattern",
+            )?;
             for e in entries {
                 ins.execute(params![
                     conn,
@@ -399,69 +428,104 @@ impl Store {
         let buckets = buckets.clamp(1, 500) as i64;
         let span = (f.to - f.from).max(1);
 
-        // Level counts ignore the level filter, so the chips show what each would add.
+        // One pass over (ts, level, exc), read from the covering index, gives the level
+        // counts (which ignore the level filter, so the chips show what each would add)
+        // and the histogram. Bucketing here is about ten times faster than a GROUP BY,
+        // which makes SQLite sort every row of the range.
         let (w_all, p_all) = f.where_clause(conn, false);
+        let wanted = |l: Level| !f.no_levels && (f.levels.is_empty() || f.levels.contains(&l));
         let mut levels = LevelCounts::default();
-        let mut st = db.prepare(&format!("SELECT level, COUNT(*) FROM entries WHERE {w_all} GROUP BY level"))?;
-        let rows = st.query_map(params_from_iter(p_all.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, u64>(1)?)))?;
-        for row in rows {
-            let (l, n) = row?;
-            match Level::from_i64(l) {
-                Level::Error => levels.error += n,
-                Level::Warn => levels.warn += n,
-                Level::Info => levels.info += n,
-                Level::Debug => levels.debug += n,
-            }
-        }
-
-        let (w, p) = f.where_clause(conn, true);
         let mut histogram = vec![Bucket::default(); buckets as usize];
-        let mut st =
-            db.prepare(&format!("SELECT (ts - ?) * ? / ? AS b, level, COUNT(*), SUM(exc) FROM entries WHERE {w} GROUP BY b, level"))?;
-        let mut hp = vec![Sql::Integer(f.from), Sql::Integer(buckets), Sql::Integer(span)];
-        hp.extend(p.iter().cloned());
         let mut total = 0u64;
-        let rows = st.query_map(params_from_iter(hp.iter()), |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, u64>(2)?, r.get::<_, u64>(3)?))
-        })?;
-        for row in rows {
-            let (b, l, n, exc) = row?;
-            let Some(bk) = histogram.get_mut(b.clamp(0, buckets - 1) as usize) else { continue };
-            total += n;
-            bk.exc += exc;
-            match Level::from_i64(l) {
-                Level::Error => bk.error += n,
-                Level::Warn => bk.warn += n,
-                Level::Info => bk.info += n,
-                Level::Debug => bk.debug += n,
+        let mut st = db.prepare(&format!("SELECT ts, level, exc FROM entries WHERE {w_all}"))?;
+        let mut rows = st.query(params_from_iter(p_all.iter()))?;
+        while let Some(r) = rows.next()? {
+            let (ts, level, exc): (i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
+            let level = Level::from_i64(level);
+            *levels.get_mut(level) += 1;
+            if !wanted(level) {
+                continue;
             }
+            let bk = &mut histogram[((ts - f.from) * buckets / span).clamp(0, buckets - 1) as usize];
+            total += 1;
+            bk.exc += (exc != 0) as u64;
+            *bk.get_mut(level) += 1;
         }
+        drop(rows);
+        drop(st);
 
-        let mut groups = Vec::new();
-        let mut st = db.prepare(&format!(
-            "SELECT fp, COUNT(*), MAX(level), MIN(ts), MAX(ts), GROUP_CONCAT(DISTINCT service), GROUP_CONCAT(DISTINCT node),
-                    COUNT(DISTINCT source), MAX(exc), MAX(id)
-             FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3 GROUP BY fp ORDER BY COUNT(*) DESC LIMIT 50"
-        ))?;
-        let rows = st.query_map(params_from_iter(p.iter()), |r| {
-            Ok(Group {
-                fp: r.get(0)?,
-                pattern: String::new(),
-                count: r.get(1)?,
-                level: Level::from_i64(r.get(2)?),
-                first: r.get(3)?,
-                last: r.get(4)?,
-                services: split_list(r.get::<_, Option<String>>(5)?),
-                nodes: split_list(r.get::<_, Option<String>>(6)?),
-                sources: r.get(7)?,
-                exc: r.get::<_, i64>(8)? != 0,
-                sample: r.get::<_, i64>(9)?.to_string(),
-                spark: vec![0; 24],
-            })
-        })?;
-        for g in rows {
-            groups.push(g?);
+        // Error groups, aggregated the same way. The partial index holds only lines with a fingerprint.
+        let (w, p) = f.where_clause(conn, true);
+        // The sparklines (24 buckets per group) come from the same pass.
+        struct Agg {
+            g: Group,
+            sources: std::collections::HashSet<String>,
+            max_id: i64,
         }
+        let mut by_fp: HashMap<String, Agg> = HashMap::new();
+        let mut st = db.prepare(&format!(
+            "SELECT fp, level, ts, exc, service, node, source, id FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3"
+        ))?;
+        let mut rows = st.query(params_from_iter(p.iter()))?;
+        while let Some(r) = rows.next()? {
+            // Borrowed strings: most rows only bump counters of a group that exists already.
+            let fp = r.get_ref(0)?.as_str()?;
+            let (level, ts, exc, id): (i64, i64, i64, i64) = (r.get(1)?, r.get(2)?, r.get(3)?, r.get(7)?);
+            let level = Level::from_i64(level);
+            let a = match by_fp.get_mut(fp) {
+                Some(a) => a,
+                None => by_fp.entry(fp.to_string()).or_insert(Agg {
+                    g: Group {
+                        fp: fp.to_string(),
+                        pattern: String::new(),
+                        count: 0,
+                        level,
+                        first: ts,
+                        last: ts,
+                        services: vec![],
+                        nodes: vec![],
+                        sources: 0,
+                        exc: false,
+                        sample: String::new(),
+                        spark: vec![0; 24],
+                    },
+                    sources: Default::default(),
+                    max_id: id,
+                }),
+            };
+            let g = &mut a.g;
+            g.count += 1;
+            g.level = g.level.max(level);
+            g.first = g.first.min(ts);
+            g.last = g.last.max(ts);
+            g.exc |= exc != 0;
+            g.spark[((ts - f.from) * 24 / span).clamp(0, 23) as usize] += 1;
+            let service = r.get_ref(4)?.as_str()?;
+            if !g.services.iter().any(|x| x == service) {
+                g.services.push(service.to_string());
+            }
+            let node = r.get_ref(5)?.as_str()?;
+            if !g.nodes.iter().any(|x| x == node) {
+                g.nodes.push(node.to_string());
+            }
+            let source = r.get_ref(6)?.as_str()?;
+            if !a.sources.contains(source) {
+                a.sources.insert(source.to_string());
+            }
+            a.max_id = a.max_id.max(id);
+        }
+        drop(rows);
+        drop(st);
+        let mut groups: Vec<Group> = by_fp
+            .into_values()
+            .map(|mut a| {
+                a.g.sources = a.sources.len() as u64;
+                a.g.sample = a.max_id.to_string();
+                a.g
+            })
+            .collect();
+        groups.sort_by(|a, b| b.count.cmp(&a.count).then(b.last.cmp(&a.last)));
+        groups.truncate(50);
         if !groups.is_empty() {
             let mut pat = db.prepare_cached("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2")?;
             let mut sample = db.prepare_cached("SELECT text FROM entries WHERE id = ?1")?;
@@ -469,23 +533,6 @@ impl Store {
                 g.pattern = pat.query_row(params![conn, g.fp], |r| r.get(0)).optional()?.unwrap_or_default();
                 let id: i64 = g.sample.parse().unwrap_or(0);
                 g.sample = sample.query_row(params![id], |r| r.get(0)).optional()?.unwrap_or_default();
-            }
-            let index: HashMap<String, usize> = groups.iter().enumerate().map(|(i, g)| (g.fp.clone(), i)).collect();
-            let marks: Vec<String> = groups.iter().map(|_| "?".to_string()).collect();
-            let mut st = db.prepare(&format!(
-                "SELECT fp, (ts - ?) * 24 / ? AS b, COUNT(*) FROM entries WHERE {w} AND fp IN ({}) GROUP BY fp, b",
-                marks.join(",")
-            ))?;
-            let mut sp = vec![Sql::Integer(f.from), Sql::Integer(span)];
-            sp.extend(p.iter().cloned());
-            sp.extend(groups.iter().map(|g| Sql::Text(g.fp.clone())));
-            let rows =
-                st.query_map(params_from_iter(sp.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, u64>(2)?)))?;
-            for row in rows {
-                let (fp, b, n) = row?;
-                if let Some(&i) = index.get(&fp) {
-                    groups[i].spark[b.clamp(0, 23) as usize] += n;
-                }
             }
         }
 
@@ -585,16 +632,21 @@ impl Store {
 
     /// Deletes entries older than `before` (µs) and the oldest entries beyond `max_bytes`.
     pub fn retain(&self, before: i64, max_bytes: u64) -> Result<u64> {
-        let db = self.db.lock().unwrap();
         let mut deleted = 0u64;
+        // The lock is taken per batch, so queries and new lines get through between batches.
         loop {
-            let n = db.execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE ts < ?1 LIMIT 20000)", params![before])?;
+            let n = self
+                .db
+                .lock()
+                .unwrap()
+                .execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE ts < ?1 LIMIT 20000)", params![before])?;
             deleted += n as u64;
             if n < 20000 {
                 break;
             }
         }
         for _ in 0..50 {
+            let db = self.db.lock().unwrap();
             if used_bytes(&db)? <= max_bytes {
                 break;
             }
@@ -608,7 +660,7 @@ impl Store {
             }
         }
         if deleted > 0 {
-            db.execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
+            self.db.lock().unwrap().execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
         }
         Ok(deleted)
     }
@@ -716,10 +768,6 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntryOut> {
         text: r.get(12)?,
         raw: r.get(13)?,
     })
-}
-
-fn split_list(s: Option<String>) -> Vec<String> {
-    s.map(|s| s.split(',').map(str::to_string).collect()).unwrap_or_default()
 }
 
 fn csv(s: &str) -> String {

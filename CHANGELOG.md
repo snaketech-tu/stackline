@@ -20,6 +20,16 @@ its GitHub release, and swarmdash shows it in the update dialog.
 - Stored logs are tied to the host or swarm a connection reaches. If a connection is pointed at another host, its old lines are deleted instead of showing up next to the new ones
 - Views start fresh when you switch connections, and the overview names the host its errors come from
 
+### Faster
+- The Logs page reads its time graph, level counts and error groups in one pass over two new indexes: on a store with 1.5 million lines a 7-day view takes about 0.4 s instead of 2 s
+- Deleting old lines no longer blocks the app while it runs, and repeated error patterns are no longer rewritten on every new line
+- The service panel stops refetching on every refresh, big log pages refresh every 15 s, and hidden tabs stop polling
+- The first start after the update builds the new indexes once, which can take a moment on a large store
+
+### Fixed
+- The connection menu and other dropdowns are no longer drawn under the overview cards
+- The Errors tab of a service shows long messages in full at a readable size, and large counts are no longer cut off
+
 ### Alerts
 - Optional notification when a connection logs too many errors: pick 5, 10 or 15 minutes and a threshold under Preferences
 - One notification per crossing; the overview shows a banner while the rate stays high

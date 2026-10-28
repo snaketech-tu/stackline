@@ -55,7 +55,8 @@
   $effect(() => {
     if (!L.preset) return
     const every = L.live ? Math.max(1, app.settings?.logPollSecs ?? 3) * 1000 : 15000
-    const t = setInterval(load, every)
+    // A hidden tab catches up when it is shown again instead of polling in the background.
+    const t = setInterval(() => !document.hidden && load(), every)
     return () => clearInterval(t)
   })
   $effect(() => {

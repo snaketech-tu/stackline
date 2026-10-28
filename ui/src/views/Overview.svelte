@@ -139,7 +139,7 @@
   {@const a = app.activeAlert}
   <div class="err-banner alert-banner" role="alert">
     <Icon name="bell" size={16} />
-    <span><b>{a.count} errors in the last {a.windowMins} minutes on {a.name}</b> · alert at {a.threshold}{#if a.since}, since {hhmm(a.since)}{/if}
+    <span><b>{plural(a.count, 'error')} in the last {a.windowMins} minutes on {a.name}</b> · alert at {a.threshold}{#if a.since}, since {hhmm(a.since)}{/if}
       {#if a.top}<span class="why mono" title={a.top}>Most frequent: {a.top}{#if a.topService} ({a.topService}){/if}</span>{/if}</span>
     <span class="spacer"></span>
     <button class="btn sm" onclick={() => app.openAlert(a)}>Show errors</button>

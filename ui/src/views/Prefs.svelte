@@ -52,9 +52,11 @@
   }
 
   // Alerts: the desktop app shows native notifications; in a browser the page asks for permission.
+  // The desktop app shows system notifications; known from the start, unlike the alert list.
+  let native = $derived(!!app.meta?.desktop || app.alertsNative)
   let permission = $state(typeof Notification === 'undefined' ? 'unsupported' : Notification.permission)
   async function askPermission() {
-    if (typeof Notification === 'undefined' || app.alertsNative) return
+    if (typeof Notification === 'undefined' || native) return
     try {
       permission = await Notification.requestPermission()
     } catch {
@@ -110,7 +112,7 @@
       <span class="d">
         Counts the errors each connection logged and sends one notification when the count reaches the threshold, then waits until it drops again.
         Covers every connection you opened since swarmdash started, and only reads the logs stored on this computer.
-        {#if !app.alertsNative}
+        {#if !native}
           {#if permission === 'denied'}<b style="color:var(--err)">This browser blocks notifications for swarmdash. Allow them in the site settings; until then alerts only show inside the page.</b>
           {:else if permission === 'unsupported'}This browser cannot show notifications, so alerts show inside the page.
           {:else}Notifications show while swarmdash is open in a browser tab.{/if}

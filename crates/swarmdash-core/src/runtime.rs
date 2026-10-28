@@ -283,19 +283,26 @@ impl Manager {
         let r = rt.clone();
         let log_task = tokio::spawn(async move {
             let mut collector = Collector::new(&r.cfg.id, m.store.clone());
+            let mut bound: Option<String> = None;
             loop {
                 let settings = m.config().settings;
                 let snap = r.snapshot();
                 if let (Some(snap), Ok(client)) = (snap, r.client().await) {
                     // Lines stored under this connection must come from the host it reaches now.
-                    if let Some(identity) = snap.identity() {
-                        match m.store.bind_host(&r.cfg.id, &identity) {
-                            Ok(true) => {
-                                tracing::info!("{} now reaches another host; its stored logs were cleared", r.cfg.name);
-                                collector = Collector::new(&r.cfg.id, m.store.clone());
+                    // Checked when the identity is first seen or changes, not on every poll.
+                    if let Some(identity) = snap.identity().filter(|i| bound.as_ref() != Some(i)) {
+                        let (store, conn, id2) = (m.store.clone(), r.cfg.id.clone(), identity.clone());
+                        // Clearing a large store takes a while; keep it off the async workers.
+                        match tokio::task::spawn_blocking(move || store.bind_host(&conn, &id2)).await {
+                            Ok(Ok(cleared)) => {
+                                if cleared {
+                                    tracing::info!("{} now reaches another host; its stored logs were cleared", r.cfg.name);
+                                    collector = Collector::new(&r.cfg.id, m.store.clone());
+                                }
+                                bound = Some(identity);
                             }
-                            Ok(false) => {}
-                            Err(e) => tracing::warn!("could not check the host of {}: {e:#}", r.cfg.name),
+                            Ok(Err(e)) => tracing::warn!("could not check the host of {}: {e:#}", r.cfg.name),
+                            Err(_) => {}
                         }
                     }
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
