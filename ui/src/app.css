@@ -229,7 +229,7 @@ body{background:radial-gradient(1100px 420px at 75% -160px,var(--glow),transpare
 .nav .cnt{background:var(--err);color:#fff;font-weight:600}
 .side .foot{border-top:1px solid var(--side-2);color:var(--side-muted)}
 .side .foot .ro{color:var(--accent)}
-.top{background:color-mix(in srgb,var(--panel) 72%,transparent);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+.top{background:color-mix(in srgb,var(--panel) 72%,transparent);backdrop-filter:blur(10px)}
 .top h1{font-size:19px;font-weight:700;letter-spacing:-.015em}
 .ctl{border-radius:9px;background:var(--panel);box-shadow:0 1px 1px rgba(15,35,48,.04)}
 label.ctl[for="cluster"]{border-radius:999px;padding:0 6px 0 12px;background:var(--panel-2)}

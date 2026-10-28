@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import { app, LEVELS, PRESETS, type Preset } from '../lib/state.svelte'
   import { api, query } from '../lib/api'
   import { ago, bytes, firstLine, hhmm, patternParts, plural, searchTerms } from '../lib/format'
@@ -68,10 +69,20 @@
   })
 
   // Search box: typed text is applied after a short pause.
+  let typed: string | null = null
   $effect(() => {
-    const v = qInput
-    const t = setTimeout(() => (L.q = v), 250)
+    const v = (typed = qInput)
+    const t = setTimeout(() => {
+      L.q = v
+      typed = null
+    }, 250)
     return () => clearTimeout(t)
+  })
+  // Leaving the page within that pause keeps what was typed, unless the
+  // page closes because another connection was picked.
+  const conn = app.activeId
+  onDestroy(() => {
+    if (typed !== null && app.activeId === conn) L.q = typed
   })
   $effect(() => {
     // Filters set from elsewhere (a chip, the overview) show up in the box.
