@@ -44,7 +44,8 @@ const INSERT_TRIGGER: &str = "CREATE TRIGGER entries_ai AFTER INSERT ON entries 
 END;";
 
 /// Adds to the counts of a minute: for the service, and for the whole connection (service '').
-const ADD_MINUTE: &str = "INSERT INTO minutes (conn, minute, service, stack, debug, info, warn, error, debug_exc, info_exc, warn_exc, error_exc)
+const ADD_MINUTE: &str =
+    "INSERT INTO minutes (conn, minute, service, stack, debug, info, warn, error, debug_exc, info_exc, warn_exc, error_exc)
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
     ON CONFLICT (conn, minute, service) DO UPDATE SET
         debug = debug + excluded.debug, info = info + excluded.info, warn = warn + excluded.warn, error = error + excluded.error,
