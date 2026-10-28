@@ -43,7 +43,7 @@ that opens the dashboard in your browser.
   variables (secret-looking values stay hidden), labels and swarm settings.
 - **Get told when errors pile up.** An optional alert sends a notification when a
   connection logs more errors than you allow within 5 to 15 minutes.
-- **Keep logs locally.** A SQLite store retains seven days by default. Searches
+- **Keep logs locally.** A SQLite store retains two days by default. Searches
   use the local store; collection resumes from the last stored timestamp.
   Choose per service whose logs are collected, so chatty services do not fill
   the disk.
@@ -174,7 +174,7 @@ before collection.
 
 Under **Preferences**, adjust log retention, the store size limit, refresh
 intervals, CPU and memory collection, theme, and update checks. The defaults
-are seven days of logs and a 5 GiB store size limit. swarmdash checks both
+are two days of logs and a 1 GiB store size limit. swarmdash checks both
 every minute: when the store is over the limit it deletes the oldest lines
 until it is at about 90% of it, and the file on disk shrinks with it. The
 **Local store** section shows how much each service of the selected connection

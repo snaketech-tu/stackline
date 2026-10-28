@@ -86,8 +86,10 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "system".into(),
-            retention_days: 7,
-            max_store_mb: 5120,
+            // Debugging is about the last hours; a week of every service of a
+            // big stack costs a lot of disk and a long first read.
+            retention_days: 2,
+            max_store_mb: 1024,
             refresh_secs: 10,
             log_poll_secs: 3,
             collect_stats: true,
@@ -196,7 +198,7 @@ mod tests {
             }
             _ => panic!(),
         }
-        assert_eq!(c.settings.retention_days, 7);
+        assert_eq!(c.settings.retention_days, 2);
         let back = serde_json::to_string(&c).unwrap();
         assert!(back.contains(r#""kind":"ssh""#));
         assert_eq!(new_id("Prod EU!", &["prod-eu".into()]), "prod-eu-2");

@@ -174,8 +174,8 @@
 
   <section class="panel">
     <div class="ph"><h2>Log collection</h2><span class="pill ok" style="font-size:11.5px">read-only</span></div>
-    {@render select('retentionDays', 'Keep logs for', 'Older lines are deleted from this computer. The server is never touched.', opts([3, 7, 14, 30, 90], s.retentionDays), (d) => `${d} days`)}
-    {@render select('maxStoreMb', 'Max local storage', 'When the store is full, the oldest lines go first.', opts([1024, 2048, 5120, 10240, 20480], s.maxStoreMb), (mb) => (mb >= 1024 ? mb / 1024 + ' GB' : mb + ' MB'))}
+    {@render select('retentionDays', 'Keep logs for', 'Older lines are deleted from this computer. The server is never touched.', opts([1, 2, 3, 7, 14, 30, 90], s.retentionDays), (d) => (d === 1 ? '1 day' : `${d} days`))}
+    {@render select('maxStoreMb', 'Max local storage', 'When the store is full, the oldest lines go first.', opts([512, 1024, 2048, 5120, 10240, 20480], s.maxStoreMb), (mb) => (mb >= 1024 ? mb / 1024 + ' GB' : mb + ' MB'))}
     {@render select('logPollSecs', 'Fetch new log lines every', 'After the first load swarmdash only asks for lines newer than the last one it saw, per replica.', opts([2, 3, 5, 15, 60], s.logPollSecs), (v) => `${v} s`)}
     {@render select('refreshSecs', 'Refresh containers and services every', '', opts([5, 10, 30, 60], s.refreshSecs), (v) => `${v} s`)}
     {@render toggle('collectStats', 'Read CPU and memory per container', 'One extra read-only stats call per container on every refresh.')}

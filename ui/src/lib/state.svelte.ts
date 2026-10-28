@@ -263,7 +263,7 @@ class AppState {
   dismissed = $state(load('swarmdash-update-dismissed') ?? '')
   logs = new LogsState(() => {
     const now = Date.now()
-    const keep = now - (this.settings?.retentionDays ?? 7) * 86400e3
+    const keep = now - (this.settings?.retentionDays ?? 2) * 86400e3
     const oldest = this.errors?.oldest ? this.errors.oldest / 1000 : now - 3 * 3600e3
     return Math.max(keep, oldest)
   })

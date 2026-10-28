@@ -15,12 +15,12 @@ test('the store size in Preferences follows new log lines', async ({ page }) => 
 test('a changed setting is saved and survives a reload', async ({ page }) => {
   await open(page, 'prefs')
   const keep = page.getByLabel('Keep logs for')
-  await expect(keep).toHaveValue('7')
+  await expect(keep).toHaveValue('2')
   await keep.selectOption('14')
   await expect(page.locator('.saved.on')).toBeVisible()
   await page.reload()
   await expect(page.getByLabel('Keep logs for')).toHaveValue('14')
-  await page.getByLabel('Keep logs for').selectOption('7')
+  await page.getByLabel('Keep logs for').selectOption('2')
   await expect(page.locator('.saved.on')).toBeVisible()
 })
 
