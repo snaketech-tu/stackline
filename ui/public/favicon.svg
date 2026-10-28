@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 26 26"><rect x="1" y="1" width="24" height="24" rx="6" fill="#0d8a86"/><g fill="#fff"><rect x="6" y="12" width="4" height="4" rx="1"/><rect x="11" y="12" width="4" height="4" rx="1"/><rect x="16" y="12" width="4" height="4" rx="1"/><rect x="11" y="7" width="4" height="4" rx="1"/><rect x="6" y="17" width="14" height="2" rx="1"/></g></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="icon-title">
+  <title id="icon-title">swarmdash</title>
+  <rect x="4" y="4" width="120" height="120" rx="28" fill="#0d8a86"/>
+  <g transform="translate(24 30.666667) scale(0.83333333)" color="#fff"><g id="stackline" fill="currentColor">
+    <rect x="34" y="1" width="28" height="28" rx="7"/>
+    <rect x="0" y="35" width="28" height="28" rx="7"/>
+    <rect x="34" y="35" width="28" height="28" rx="7"/>
+    <rect x="68" y="35" width="28" height="28" rx="7"/>
+    <rect x="20" y="69" width="56" height="10" rx="5"/>
+  </g></g>
+</svg>

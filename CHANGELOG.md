@@ -3,6 +3,12 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## 0.2.1
+
+- Apply the Stackline identity to the app header, browser favicon, and desktop icons.
+- Add a vector logo with light and dark variants to the README.
+- Include editable logo masters and a script for regenerating the branding assets.
+
 ## 0.2.0
 
 Fewer clicks everywhere.

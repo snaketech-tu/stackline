@@ -1,4 +1,9 @@
-# swarmdash
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="ui/public/brand/stackline-dark.svg">
+    <img src="ui/public/brand/stackline-light.svg" alt="swarmdash" width="420">
+  </picture>
+</h1>
 
 [![CI](https://github.com/snaketech-tu/swarmdash/actions/workflows/ci.yml/badge.svg)](https://github.com/snaketech-tu/swarmdash/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/snaketech-tu/swarmdash)](https://github.com/snaketech-tu/swarmdash/releases/latest)

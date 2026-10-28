@@ -67,7 +67,9 @@
 <div class="app">
   <aside class="side">
     <div class="brand">
-      <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><rect x="1" y="1" width="24" height="24" rx="6" fill="var(--accent)" /><g fill="var(--panel)"><rect x="6" y="12" width="4" height="4" rx="1" /><rect x="11" y="12" width="4" height="4" rx="1" /><rect x="16" y="12" width="4" height="4" rx="1" /><rect x="11" y="7" width="4" height="4" rx="1" /><rect x="6" y="17" width="14" height="2" rx="1" /></g></svg>
+      <svg width="32" height="27" viewBox="0 0 96 80" aria-hidden="true">
+        <use href="/brand/stackline-mark.svg#stackline" />
+      </svg>
       <div>swarmdash<small>Read-only</small></div>
     </div>
     <nav class="nav">
