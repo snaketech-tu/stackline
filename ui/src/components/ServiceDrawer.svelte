@@ -28,7 +28,7 @@
   let replica = $state<string | null>(null)
   let qInput = $state('')
   let q = $state('')
-  let limit = $state(500)
+  let limit = $state(300)
   /** Covers the whole window instead of most of it. */
   let full = $state(load('swarmdash-drawer-full') === '1')
   function toggleFull() {
@@ -130,7 +130,7 @@
     lines = null
     hist = null
     details = null
-    limit = 500
+    limit = 300
     app.drawer = { kind: 'service', key: next.key, tab }
   }
   function replicaLogs(slot: string) {
@@ -368,7 +368,7 @@
     </div>
     {#if lines && lines.result.total > lines.result.entries.length}
       <span class="muted" style="font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">Newest {lines.result.entries.length.toLocaleString()} of {lines.result.total.toLocaleString()} lines.
-        {#if limit < 5000}<button class="btn ghost sm" onclick={() => (limit = Math.min(5000, limit + 500))}>Show more</button>{/if}
+        {#if limit < 5000}<button class="btn ghost sm" onclick={() => (limit = Math.min(5000, limit + 500))}>Show {Math.min(500, lines.result.total - lines.result.entries.length).toLocaleString()} more</button>{/if}
         Open in Logs for groups and download.</span>
     {/if}
   {:else}
