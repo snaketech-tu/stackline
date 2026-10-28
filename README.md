@@ -181,7 +181,8 @@ of every connection opened since it started, over the last 5, 10 or 15 minutes,
 and notifies you once when the count reaches your threshold. It notifies again
 only after the count dropped and at least one window has passed. The desktop
 app uses system notifications; in a browser, allow notifications for the
-swarmdash tab.
+swarmdash tab. Only the services whose logs are collected count toward the
+alert.
 
 swarmdash is read-only toward Docker. It writes its own settings, cached logs,
 exports and installed updates on the computer where it runs.

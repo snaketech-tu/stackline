@@ -3,7 +3,9 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
-## Unreleased
+## 0.3.0
+
+More room for logs, more about each service, alerts, and a store that keeps to its size limit.
 
 ### Logs
 - The log stream now uses the full width, with the error groups above it. A layout button puts them back beside the stream, and the groups can be hidden
@@ -32,7 +34,8 @@ its GitHub release, and swarmdash shows it in the update dialog.
 
 ### Disk space and log collection
 - The store size limit is enforced: swarmdash checks it every minute instead of every hour, deletes the oldest lines down to about 90% of the limit, and gives the space back to the disk. Before, deleted lines left the file at its largest size
-- Stores made by earlier versions are rebuilt once on the first start, so they can shrink. This can take a while on a large store
+- Stores made by earlier versions are rebuilt once on the first start, so they can shrink. On a large store this takes a while and needs free disk space about the size of the store
+- The cleanup works in small steps, so searches and new lines are not held up while it runs
 - Choose whose logs are collected: **Collect** switches per service and per stack on the Stacks page, and **Only chosen** to collect nothing but the services you switch on. A service switched on again starts from that moment
 - Preferences → Local store shows the space each service takes, with a switch to stop collecting it and a button to delete its lines
 - The service panel says when its logs are not collected

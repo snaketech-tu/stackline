@@ -647,16 +647,20 @@ impl Store {
     pub fn retain(&self, before: i64, max_bytes: u64) -> Result<u64> {
         const BATCH: usize = 20_000;
         let mut deleted = 0u64;
-        // The lock is taken per batch, so queries and new lines get through between batches.
-        loop {
-            let n = self
-                .db
-                .lock()
-                .unwrap()
-                .execute("DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE ts < ?1 LIMIT ?2)", params![before, BATCH])?;
-            deleted += n as u64;
-            if n < BATCH {
-                break;
+        // Per connection, so the (conn, ts) index finds old lines without
+        // reading the table. The lock is taken per batch, so queries and new
+        // lines get through between batches.
+        let conns = conns(&self.db.lock().unwrap())?;
+        for conn in conns {
+            loop {
+                let n = self.db.lock().unwrap().execute(
+                    "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE conn = ?1 AND ts < ?2 LIMIT ?3)",
+                    params![conn, before, BATCH],
+                )?;
+                deleted += n as u64;
+                if n < BATCH {
+                    break;
+                }
             }
         }
         // Over the size limit: drop the oldest lines first, down to 90% of the
@@ -665,11 +669,12 @@ impl Store {
         // Deleted lines stay in the search index until it is merged, so the
         // index is optimized before the size is measured again.
         for _ in 0..4 {
-            let (live, total): (u64, u64) = {
-                let db = self.db.lock().unwrap();
-                (live_bytes(&db)?, db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?)
-            };
-            if live <= max_bytes || total == 0 {
+            let live = live_bytes(&self.db.lock().unwrap())?;
+            if live <= max_bytes {
+                break;
+            }
+            let total: u64 = self.db.lock().unwrap().query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+            if total == 0 {
                 break;
             }
             let target = max_bytes / 10 * 9;
@@ -685,7 +690,7 @@ impl Store {
                     break;
                 }
             }
-            self.db.lock().unwrap().execute_batch("INSERT INTO entries_fts (entries_fts) VALUES ('optimize');")?;
+            self.merge_index()?;
         }
         let db = self.db.lock().unwrap();
         let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
@@ -700,6 +705,20 @@ impl Store {
         Ok(deleted)
     }
 
+    /// Merges the search index so deleted lines leave it, like FTS5's
+    /// `optimize`, but in steps that release the lock in between: on a large
+    /// store a full optimize would block queries and new lines for minutes.
+    fn merge_index(&self) -> Result<()> {
+        loop {
+            let db = self.db.lock().unwrap();
+            let before = db.total_changes();
+            db.execute("INSERT INTO entries_fts (entries_fts, rank) VALUES ('merge', -500)", [])?;
+            if db.total_changes() - before <= 1 {
+                return Ok(());
+            }
+        }
+    }
+
     /// Space on disk: the database file plus its write-ahead log (kept under 64 MB).
     fn used_bytes(&self, db: &Connection) -> Result<u64> {
         let file =
@@ -711,14 +730,13 @@ impl Store {
     }
 
     /// Lines and stored text per service of a connection, largest first.
+    /// It reads every line, so on a file store it uses its own read-only
+    /// connection: thanks to WAL it does not hold up new lines or queries.
     pub fn usage(&self, conn: &str) -> Result<Vec<ServiceUsage>> {
-        let db = self.db.lock().unwrap();
-        let mut st = db.prepare(
-            "SELECT service, COUNT(*), SUM(LENGTH(text) + COALESCE(LENGTH(raw), 0)) AS b FROM entries WHERE conn = ?1
-             GROUP BY service ORDER BY b DESC",
-        )?;
-        let rows = st.query_map(params![conn], |r| Ok(ServiceUsage { service: r.get(0)?, entries: r.get(1)?, text_bytes: r.get(2)? }))?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        match &self.path {
+            Some(p) => usage(&Connection::open_with_flags(p, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?, conn),
+            None => usage(&self.db.lock().unwrap(), conn),
+        }
     }
 
     /// Deletes the stored lines of one service, in batches.
@@ -735,9 +753,8 @@ impl Store {
             }
         }
         if deleted > 0 {
-            self.db.lock().unwrap().execute_batch(
-                "INSERT INTO entries_fts (entries_fts) VALUES ('optimize'); PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);",
-            )?;
+            self.merge_index()?;
+            self.db.lock().unwrap().execute_batch("PRAGMA incremental_vacuum; PRAGMA wal_checkpoint(TRUNCATE);")?;
         }
         Ok(deleted)
     }
@@ -801,7 +818,12 @@ impl Store {
 
     pub fn stats(&self) -> Result<StoreStats> {
         let db = self.db.lock().unwrap();
-        let (entries, oldest) = db.query_row("SELECT COUNT(*), MIN(ts) FROM entries", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        let entries = db.query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+        let mut oldest: Option<i64> = None;
+        for c in conns(&db)? {
+            let t: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![c], |r| r.get(0))?;
+            oldest = oldest.into_iter().chain(t).min();
+        }
         Ok(StoreStats { bytes: self.used_bytes(&db)?, entries, oldest })
     }
 
@@ -819,6 +841,29 @@ impl Store {
         db.execute_batch("PRAGMA incremental_vacuum;")?;
         Ok(())
     }
+}
+
+/// Lines and stored text per service of a connection, largest first.
+fn usage(db: &Connection, conn: &str) -> Result<Vec<ServiceUsage>> {
+    let mut st = db.prepare(
+        "SELECT service, COUNT(*), SUM(LENGTH(text) + COALESCE(LENGTH(raw), 0)) AS b FROM entries WHERE conn = ?1
+         GROUP BY service ORDER BY b DESC",
+    )?;
+    let rows = st.query_map(params![conn], |r| Ok(ServiceUsage { service: r.get(0)?, entries: r.get(1)?, text_bytes: r.get(2)? }))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// The connections that have stored lines, found by skipping through the
+/// index instead of reading every row.
+fn conns(db: &Connection) -> Result<Vec<String>> {
+    let mut st = db.prepare_cached(
+        "WITH RECURSIVE c(conn) AS (
+             SELECT MIN(conn) FROM entries
+             UNION ALL SELECT (SELECT MIN(conn) FROM entries WHERE conn > c.conn) FROM c WHERE c.conn IS NOT NULL
+         ) SELECT conn FROM c WHERE conn IS NOT NULL",
+    )?;
+    let rows = st.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
 }
 
 /// Pages that hold data; free pages are given back by `incremental_vacuum`.
@@ -1066,5 +1111,40 @@ mod tests {
         let u = store.usage("c1").unwrap();
         assert_eq!(u.len(), 1);
         assert_eq!(u[0].service, "shop_web");
+    }
+
+    #[test]
+    #[ignore]
+    /// `cargo test --release -p swarmdash-core bench_retain_large -- --ignored --nocapture`
+    fn bench_retain_large() {
+        let dir = std::env::temp_dir().join("swarmdash-bench-retain");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("logs.db")).unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let words = ["GET", "/api/orders", "200", "user", "cart", "checkout", "redis", "timeout", "INFO", "worker", "job", "queue"];
+        let start = std::time::Instant::now();
+        for chunk in 0..120i64 {
+            let lines: Vec<(i64, String)> = (0..2500i64)
+                .map(|i| {
+                    let n = chunk * 2500 + i;
+                    let w: Vec<&str> = (0..14).map(|k| words[((n * 7 + k * 13) % 12) as usize]).collect();
+                    (now + n * 1000, format!("2026-10-27 INFO req={n} {} id={:x}", w.join(" "), n * 2654435761))
+                })
+                .collect();
+            let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            store.insert("c1", &src(&format!("svc{}", chunk % 5), "1"), &entries(&refs)).unwrap();
+        }
+        let live = live_bytes(&store.db.lock().unwrap()).unwrap();
+        eprintln!("insert 300k lines: {:?}, live {} MB", start.elapsed(), live >> 20);
+        let t = std::time::Instant::now();
+        store.usage("c1").unwrap();
+        eprintln!("usage: {:?}", t.elapsed());
+        let t = std::time::Instant::now();
+        store.retain(0, live / 10 * 8).unwrap();
+        eprintln!("retain to 80%: {:?}, live {} MB", t.elapsed(), live_bytes(&store.db.lock().unwrap()).unwrap() >> 20);
+        let t = std::time::Instant::now();
+        store.retain(0, live).unwrap();
+        eprintln!("retain no-op: {:?}", t.elapsed());
     }
 }
