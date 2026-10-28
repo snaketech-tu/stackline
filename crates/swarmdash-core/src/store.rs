@@ -653,17 +653,40 @@ impl Store {
             }
             self.merge_index()?;
         }
-        let db = self.db.lock().unwrap();
-        let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
-        if mode != 2 {
-            // Stores made before 0.3 could never shrink: switch them over once.
-            tracing::info!("rebuilding the log store once so it can give space back");
-            db.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
-        } else if deleted > 0 {
-            db.execute_batch("PRAGMA incremental_vacuum;")?;
+        {
+            let db = self.db.lock().unwrap();
+            let mode: i64 = db.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+            if mode != 2 {
+                // Stores made before 0.3 could never shrink: switch them over once.
+                tracing::info!("rebuilding the log store once so it can give space back");
+                db.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+            }
         }
-        checkpoint(&db)?;
+        // Also when nothing was deleted now: up to 0.3.1 free space was never
+        // given back, so stores made by those versions shrink here once.
+        self.shrink()?;
         Ok(deleted)
+    }
+
+    /// Gives free pages back to the system and moves the write-ahead log
+    /// into the file, so the file shrinks on disk. In steps that release the
+    /// lock in between, so queries and new lines get through.
+    fn shrink(&self) -> Result<()> {
+        const STEP: u64 = 4096;
+        let mut last = u64::MAX;
+        loop {
+            let db = self.db.lock().unwrap();
+            let free: u64 = db.query_row("PRAGMA freelist_count", [], |r| r.get(0))?;
+            if free == 0 || free >= last {
+                return checkpoint(&db);
+            }
+            last = free;
+            // Each step of this pragma frees one page, so it is run to the end:
+            // run once, as `execute_batch` does, it freed a single page.
+            let mut st = db.prepare(&format!("PRAGMA incremental_vacuum({})", free.min(STEP)))?;
+            let mut rows = st.query([])?;
+            while rows.next()?.is_some() {}
+        }
     }
 
     /// Merges the search index so deleted lines leave it, like FTS5's
@@ -700,9 +723,7 @@ impl Store {
         let deleted = self.delete_entries(Some(conn), Some(service))?;
         if deleted > 0 {
             self.merge_index()?;
-            let db = self.db.lock().unwrap();
-            db.execute_batch("PRAGMA incremental_vacuum;")?;
-            checkpoint(&db)?;
+            self.shrink()?;
         }
         Ok(deleted)
     }
@@ -825,9 +846,8 @@ impl Store {
             }
             None => db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts;")?,
         }
-        db.execute_batch("PRAGMA incremental_vacuum;")?;
-        checkpoint(&db)?;
-        Ok(())
+        drop(db);
+        self.shrink()
     }
 }
 
@@ -1418,6 +1438,40 @@ mod tests {
         let r = store.query("c1", &all, 1, 1).unwrap();
         assert!(r.total > 0 && r.total < 20_000);
         assert_eq!(r.entries[0].ts, now + 19_999 * 1000);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn deleting_lines_shrinks_the_file() {
+        let dir = std::env::temp_dir().join(format!("swarmdash-shrink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("logs.db");
+        let store = Store::open(&path).unwrap();
+        let now = 1_700_000_000_000_000i64;
+        let text = "2026-10-27 INFO ".to_string() + &"chatty ".repeat(60);
+        let fill = |svc: &str| {
+            for chunk in 0..10 {
+                let lines: Vec<(i64, String)> = (0..1000).map(|i| (now + (chunk * 1000 + i) * 1000, format!("{text}{i}"))).collect();
+                let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+                store.insert("c1", &src(svc, "1"), &entries(&refs)).unwrap();
+            }
+        };
+        fill("shop_api");
+        fill("shop_web");
+        let on_disk = || store.stats().unwrap().bytes;
+        let full = on_disk();
+        store.clear_service("c1", "shop_api").unwrap();
+        let half = on_disk();
+        assert!(half < full * 2 / 3, "{half} of {full} after deleting half the lines");
+        // Free pages that older versions left behind go back at the next retention run.
+        fill("shop_db");
+        store.db.lock().unwrap().execute("DELETE FROM entries WHERE service = 'shop_db'", []).unwrap();
+        let stale = on_disk();
+        store.retain(0, u64::MAX).unwrap();
+        assert!(on_disk() < stale * 4 / 5, "{} of {stale} after the retention run", on_disk());
+        store.clear(None).unwrap();
+        assert!(on_disk() < 1_000_000, "{} left after clearing everything", on_disk());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

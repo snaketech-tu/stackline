@@ -36,6 +36,14 @@
   $effect(() => {
     loadStats()
   })
+  // The size grows while logs come in, so it follows along while the page is open.
+  $effect(() => {
+    const t = setInterval(async () => {
+      if (document.hidden) return
+      stats = await api<StoreStats>('/store').catch(() => stats)
+    }, 15000)
+    return () => clearInterval(t)
+  })
   // While lines are being deleted, the sizes follow along until it is done.
   $effect(() => {
     if (!usage?.deleting.length) return

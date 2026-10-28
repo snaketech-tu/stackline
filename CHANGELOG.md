@@ -3,6 +3,15 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and swarmdash shows it in the update dialog.
 
+## 0.3.2
+
+The local store shrinks again when lines are deleted, and stacks no longer show as failing because of services you stopped.
+
+### Fixed
+- Deleted log lines now give their space back to the disk. Before, the store file kept its size after deleting a service's lines, after clearing all stored logs and when old lines expired, so the size in Preferences never went down. A store that grew this way shrinks on its own within a minute of starting 0.3.2
+- The size of the local store in Preferences now updates while the page is open
+- A container stopped with `docker stop` or `docker compose stop`, or created but never started, counts as stopped instead of failing, so its stack no longer shows as failing. A container that crashed still does
+
 ## 0.3.1
 
 Much less work for your server, a faster Logs page and faster log deletion.

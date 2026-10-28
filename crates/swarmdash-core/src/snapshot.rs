@@ -316,14 +316,15 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
         .map(|c| {
             let status = s(&c["Status"]);
             let state = s(&c["State"]);
+            let exit_code = exit_code_of(&status);
             Task {
                 id: s(&c["Id"]),
                 slot: c["Labels"][COMPOSE_NUMBER].as_str().map(str::to_string).unwrap_or_else(|| "1".into()),
                 node: host.to_string(),
                 state: state.clone(),
-                desired_state: if state == "running" { "running".into() } else { state.clone() },
+                desired_state: if expected_to_run(&state, exit_code) { "running".into() } else { state.clone() },
                 health: health_of(&status),
-                exit_code: exit_code_of(&status),
+                exit_code,
                 message: Some(status),
                 error: None,
                 container_id: Some(s(&c["Id"])),
@@ -337,8 +338,7 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
         .collect();
     tasks.sort_by_key(|a| natural(&a.slot));
     let running = tasks.iter().filter(|t| t.state == "running").count() as u32;
-    // A container that exited cleanly (a one-shot job) is not expected to run.
-    let desired = tasks.iter().filter(|t| !(t.state == "exited" && t.exit_code.is_none())).count() as u32;
+    let desired = tasks.iter().filter(|t| t.desired_state == "running").count() as u32;
     let mut ports: Vec<String> = Vec::new();
     for c in cs {
         for p in c["Ports"].as_array().into_iter().flatten() {
@@ -499,6 +499,19 @@ fn health_of(status: &str) -> Option<String> {
     None
 }
 
+/// Whether a container should be running. A container that was never started,
+/// is paused, finished cleanly (a one-shot job) or was stopped (`docker stop`
+/// or `docker compose stop` end it with SIGTERM, 143, or SIGKILL, 137) is
+/// stopped on purpose. One that crashed with any other code, or keeps
+/// restarting, is not.
+fn expected_to_run(state: &str, exit_code: Option<i64>) -> bool {
+    match state {
+        "created" | "paused" => false,
+        "exited" => !matches!(exit_code, None | Some(137) | Some(143)),
+        _ => true,
+    }
+}
+
 fn exit_code_of(status: &str) -> Option<i64> {
     let rest = status.strip_prefix("Exited (")?;
     let code: i64 = rest.split(')').next()?.parse().ok()?;
@@ -523,7 +536,11 @@ mod tests {
                    "Ports":[{"PrivatePort":8080,"PublicPort":80,"Type":"tcp"},{"PrivatePort":8080,"PublicPort":80,"Type":"tcp"}]}),
             json!({"Id":"m1","Names":["/shop-migrate-1"],"Image":"shop:1","State":"exited","Status":"Exited (0) 2 hours ago","Created":1700000000,
                    "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"migrate"}}),
-            json!({"Id":"x1","Names":["/scratch"],"Image":"alpine@sha256:abc","State":"exited","Status":"Exited (137) 1 day ago","Created":1700000000,"Labels":{}}),
+            json!({"Id":"x1","Names":["/scratch"],"Image":"alpine@sha256:abc","State":"exited","Status":"Exited (1) 1 day ago","Created":1700000000,"Labels":{}}),
+            json!({"Id":"w1","Names":["/shop-worker-1"],"Image":"shop:1","State":"exited","Status":"Exited (143) 5 minutes ago","Created":1700000000,
+                   "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"worker"}}),
+            json!({"Id":"c1","Names":["/shop-cron-1"],"Image":"shop:1","State":"created","Status":"Created","Created":1700000000,
+                   "Labels":{"com.docker.compose.project":"shop","com.docker.compose.service":"cron"}}),
         ];
         let stacks = map_containers(&cs, "shop");
         assert_eq!(stacks.len(), 2);
@@ -531,10 +548,15 @@ mod tests {
         assert_eq!((app.full_name.as_str(), app.desired, app.running), ("shop_app", 1, 1));
         assert_eq!(app.ports, vec!["80→8080/tcp"]);
         assert_eq!(app.tasks[0].health.as_deref(), Some("healthy"));
-        let migrate = &stacks[0].services[1];
-        assert_eq!((migrate.desired, migrate.running), (0, 0));
+        let by = |n: &str| stacks[0].services.iter().find(|s| s.name == n).unwrap();
+        // Finished, stopped on purpose or never started: none of them counts as down.
+        for n in ["migrate", "worker", "cron"] {
+            assert_eq!((by(n).desired, by(n).running), (0, 0), "{n}");
+        }
+        assert_eq!(by("worker").tasks[0].exit_code, Some(143));
+        // A crash still does.
         let scratch = &stacks[1].services[0];
-        assert_eq!((scratch.image.as_str(), scratch.desired, scratch.tasks[0].exit_code), ("alpine", 1, Some(137)));
+        assert_eq!((scratch.image.as_str(), scratch.desired, scratch.tasks[0].exit_code), ("alpine", 1, Some(1)));
     }
 
     #[test]

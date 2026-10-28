@@ -10,7 +10,8 @@ export function svcState(s: Pick<Service, 'running' | 'desired'>): [string, stri
 
 export function taskPill(t: Task): [string, string] {
   if (t.state === 'running') return [t.health === 'unhealthy' ? 'warn' : 'ok', t.health === 'unhealthy' ? 'unhealthy' : 'running']
-  if (t.state === 'failed' || t.state === 'rejected' || (t.state === 'exited' && t.exitCode)) return ['err', t.state]
+  // A stopped container keeps its exit code, but was stopped on purpose.
+  if (t.state === 'failed' || t.state === 'rejected' || (t.state === 'exited' && t.exitCode && t.desiredState === 'running')) return ['err', t.state]
   // A slot that keeps failing sits in ready or starting between attempts.
   if (t.failures > 0 && !['complete', 'shutdown', 'exited'].includes(t.state)) return ['err', 'restarting']
   if (t.state === 'complete' || t.state === 'shutdown' || t.state === 'exited') return ['', t.state]
