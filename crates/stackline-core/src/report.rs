@@ -46,11 +46,12 @@ pub fn markdown(r: &Report) -> String {
     let _ = writeln!(o, "# Debug report: {}\n", s.full_name);
     let _ = writeln!(
         o,
-        "Connection **{}** · host `{}` · Docker {} · {} · {} by Stackline {}\n",
+        "Connection **{}** · host `{}` · {} {} · {} · {} by Stackline {}\n",
         r.connection,
         r.host.name,
+        r.host.engine,
         r.host.docker_version,
-        if r.host.swarm_state == "active" { "swarm" } else { "plain Docker" },
+        if r.host.swarm_state == "active" { "swarm" } else { "no swarm" },
         time_ms(r.now),
         r.version
     );
@@ -297,6 +298,7 @@ mod tests {
             name: "box".into(),
             os: "Linux".into(),
             kernel: "6".into(),
+            engine: "Docker".into(),
             docker_version: "27.1".into(),
             api_version: "1.46".into(),
             ncpu: 4,

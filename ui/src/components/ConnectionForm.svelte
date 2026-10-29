@@ -10,6 +10,12 @@
   let { conn = null, ondone }: { conn?: Connection | null; ondone: () => void } = $props()
 
   type Kind = 'ssh' | 'local'
+  /** Where the engines listen. Podman needs its API socket switched on: `systemctl [--user] enable --now podman.socket`. */
+  const SOCKETS = [
+    ['Docker', '/var/run/docker.sock'],
+    ['Podman as root', '/run/podman/podman.sock'],
+    ['Podman without root', '/run/user/1000/podman/podman.sock'],
+  ] as const
   // The form edits a copy; the drawer or row remounts it for another connection.
   const c = untrack(() => conn)
   let kind = $state<Kind>(c?.kind ?? 'ssh')
@@ -96,27 +102,39 @@
       <small>Aliases from <span class="mono">~/.ssh/config</span> work. Stackline runs your own ssh; keys are never copied.</small>
     </label>
     <details class="adv full" bind:open={advanced}>
-      <summary><Icon name="chev" size={12} />Advanced: port, key file, jump host, Docker socket</summary>
+      <summary><Icon name="chev" size={12} />Advanced: port, key file, jump host, Docker or Podman socket</summary>
       <div class="form">
         <label class="field"><span>Port <span class="opt">optional</span></span><input bind:value={port} inputmode="numeric" placeholder="from ~/.ssh/config, else 22" autocomplete="off" /></label>
         <label class="field"><span>Key file <span class="opt">optional</span></span><input bind:value={identity} placeholder="~/.ssh/id_ed25519" autocomplete="off" spellcheck="false" /></label>
         <label class="field"><span>Jump host <span class="opt">optional</span></span><input bind:value={jump} placeholder="user@bastion:22" autocomplete="off" spellcheck="false" /></label>
-        <label class="field"><span>Docker socket on the server</span><input bind:value={socket} autocomplete="off" spellcheck="false" /></label>
+        <label class="field">
+          <span>Docker or Podman socket on the server</span>
+          <input bind:value={socket} autocomplete="off" spellcheck="false" />
+          <small class="presets">
+            {#each SOCKETS as [label, path] (label)}<button type="button" class="linkish" aria-pressed={socket === path} onclick={() => (socket = path)}>{label}</button>{/each}
+          </small>
+          {#if socket.includes('/run/user/')}<small>Podman without root listens under the user's id: <span class="mono">id -u</span> on the server prints it.</small>{/if}
+        </label>
       </div>
     </details>
   {:else}
     <label class="field">
       <span>Docker endpoint <span class="opt">optional</span></span>
       <input bind:value={endpoint} placeholder="unix:///var/run/docker.sock" autocomplete="off" spellcheck="false" />
-      <small>Empty uses Docker's default socket, or <span class="mono">DOCKER_HOST</span> when it is set.</small>
+      <small>Empty uses Docker's default socket, or <span class="mono">DOCKER_HOST</span> when it is set, or Podman's when there is no Docker.</small>
     </label>
   {/if}
   <div class="full" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
     <button class="btn pri" type="submit" disabled={busy}>{busy ? 'Testing…' : conn ? 'Test and save changes' : 'Test and save'}</button>
     {#if failed && !busy}<button class="btn" type="button" onclick={() => save(null, true)}>Save anyway</button>{/if}
     <button class="btn ghost" type="button" onclick={ondone}>Cancel</button>
-    {#if kind === 'ssh'}<span class="hint">The SSH user needs read access to the Docker socket, usually through the <span class="mono">docker</span> group.</span>{/if}
+    {#if kind === 'ssh'}<span class="hint">The SSH user needs read access to the socket: for Docker usually through the <span class="mono">docker</span> group, for Podman without root it is the user's own.</span>{/if}
   </div>
   {#if error}<div class="full err-banner">{error}</div>{/if}
   {#if steps}<div class="full"><TestSteps {steps} /></div>{/if}
 </form>
+
+<style>
+  .presets { display: flex; gap: 10px; flex-wrap: wrap }
+  .presets button[aria-pressed='true'] { font-weight: 600; text-decoration: none }
+</style>

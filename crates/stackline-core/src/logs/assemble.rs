@@ -29,6 +29,8 @@ struct Pending {
     bytes: usize,
     has_stack: bool,
     python: bool,
+    /// A Go or Rust panic: everything printed with it belongs to it.
+    panic: bool,
 }
 
 pub struct Assembler {
@@ -71,14 +73,16 @@ impl Assembler {
             return;
         }
         let python = line.starts_with("Traceback (most recent call last)");
+        let panic = is_panic(line);
         self.pending = Some(Pending {
             first_ts: ts,
             last_ts: ts,
             stream,
             lines: vec![line.to_string()],
             bytes: line.len(),
-            has_stack: python,
+            has_stack: python || panic,
             python,
+            panic,
         });
     }
 
@@ -145,7 +149,29 @@ impl Assembler {
 
 fn is_frame(line: &str) -> bool {
     let t = line.trim_start();
-    line.len() != t.len() && (t.starts_with("at ") || t.starts_with("File \"") || t.starts_with("... ") || t.starts_with("--- End of"))
+    // Java, .NET, Node (`at`), Python (`File "`), Ruby (`from`).
+    let indented = line.len() != t.len()
+        && (t.starts_with("at ")
+            || t.starts_with("File \"")
+            || t.starts_with("from ")
+            || t.starts_with("... ")
+            || t.starts_with("--- End of"));
+    // PHP: `Stack trace:`, then `#0 /var/www/…`.
+    indented || is_php_trace(t)
+}
+
+fn is_php_trace(t: &str) -> bool {
+    t.starts_with("Stack trace:") || t.starts_with("PHP Stack trace:") || regex!(r"^(?:PHP +\d+\. |#\d+ )").is_match(t)
+}
+
+/// The first line of a Go or Rust panic.
+fn is_panic(line: &str) -> bool {
+    regex!(r"^(?:panic: |fatal error: |thread '[^']*' panicked at )").is_match(line)
+}
+
+/// A line that starts a new log entry: it begins with a date or a JSON object.
+fn starts_entry(line: &str) -> bool {
+    line.starts_with('{') || regex!(r"^\[?\d{4}[-/]\d{2}[-/]\d{2}|^time=|^\w+=\S+ level=").is_match(line)
 }
 
 fn is_continuation(p: &Pending, ts: i64, stream: StreamKind, line: &str) -> bool {
@@ -158,6 +184,15 @@ fn is_continuation(p: &Pending, ts: i64, stream: StreamKind, line: &str) -> bool
     }
     if line.len() != t.len() {
         // Indented: stack frames, wrapped messages, .NET console logger bodies.
+        return true;
+    }
+    // A Go panic prints goroutines with unindented function lines, a Rust one
+    // its message and notes: everything up to the next dated line is part of it.
+    if p.panic {
+        return !starts_entry(line);
+    }
+    // PHP: the trace and the `thrown in` line after it.
+    if is_php_trace(t) || (p.has_stack && t.starts_with("thrown in ")) {
         return true;
     }
     if t.starts_with("Caused by:")
@@ -287,6 +322,46 @@ mod tests {
         assert!(out[0].text.starts_with("Request failed\njava.lang.IllegalStateException"));
         assert_eq!(out[1].text, "GET / 200");
         assert!(out[1].raw.is_some());
+    }
+
+    #[test]
+    fn go_and_rust_panics_are_one_entry() {
+        let out = run(&[
+            (0, "panic: runtime error: invalid memory address or nil pointer dereference"),
+            (1, "[signal SIGSEGV: segmentation violation code=0x1 addr=0x0 pc=0x4a2b3c]"),
+            (1, ""),
+            (2, "goroutine 1 [running]:"),
+            (2, "main.(*Server).handle(0x0, {0xc000010000, 0x5})"),
+            (2, "\t/app/server.go:42 +0x1c"),
+            (3, "main.main()"),
+            (3, "\t/app/main.go:17 +0x25"),
+            (500_000, "2026/10/29 17:00:01 starting server on :8080"),
+            (2_000_000, "thread 'main' panicked at src/main.rs:5:5:"),
+            (2_000_001, "called `Option::unwrap()` on a `None` value"),
+            (2_000_002, "note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"),
+        ]);
+        assert_eq!(out.len(), 3, "{out:#?}");
+        assert_eq!((out[0].level, out[0].exc, out[0].lines), (Level::Error, true, 8));
+        assert!(out[0].pattern.as_deref().unwrap().starts_with("panic: runtime error"), "{:?}", out[0].pattern);
+        assert_eq!(out[1].level, Level::Info);
+        assert_eq!((out[2].level, out[2].lines), (Level::Error, 3));
+    }
+
+    #[test]
+    fn php_and_ruby_traces_are_one_entry() {
+        let out = run(&[
+            (0, "[29-Oct-2026 17:00:00 UTC] PHP Fatal error:  Uncaught Exception: Cart 12 not found in /var/www/html/cart.php:8"),
+            (1, "Stack trace:"),
+            (1, "#0 /var/www/html/index.php(3): load_cart(12)"),
+            (1, "#1 {main}"),
+            (1, "  thrown in /var/www/html/cart.php on line 8"),
+            (2_000_000, "/app/lib/cart.rb:12:in `total': undefined method `items' for nil:NilClass (NoMethodError)"),
+            (2_000_001, "\tfrom /app/lib/checkout.rb:5:in `call'"),
+            (2_000_002, "\tfrom app.rb:3:in `<main>'"),
+        ]);
+        assert_eq!(out.len(), 2, "{out:#?}");
+        assert_eq!((out[0].level, out[0].exc, out[0].lines), (Level::Error, true, 5));
+        assert_eq!((out[1].level, out[1].exc, out[1].lines), (Level::Error, true, 3));
     }
 
     #[test]

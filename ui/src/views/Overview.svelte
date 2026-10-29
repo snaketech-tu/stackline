@@ -272,7 +272,7 @@
   <section class="panel">
     <div class="ph">
       <h2>Host</h2>
-      <span class="mono muted hide-sm" style="font-size:12px">{host.name} · {host.os} · Docker {host.dockerVersion}</span>
+      <span class="mono muted hide-sm" style="font-size:12px">{host.name} · {host.os} · {host.engine} {host.dockerVersion}</span>
       <span class="spacer"></span>
       {#if snap.nodes[0]}<button class="btn ghost" onclick={() => (app.drawer = { kind: 'node', id: snap.nodes[0].id })}>Details</button>{/if}
     </div>

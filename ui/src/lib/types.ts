@@ -3,7 +3,7 @@
 export type Level = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
 
 export interface Host {
-  id: string; clusterId: string | null; name: string; os: string; kernel: string; dockerVersion: string; apiVersion: string
+  id: string; clusterId: string | null; name: string; os: string; kernel: string; engine: string; dockerVersion: string; apiVersion: string
   ncpu: number; memTotal: number; containersRunning: number; containersTotal: number; images: number
   swarmState: string; isManager: boolean; cpuPercent: number | null; memUsed: number | null
 }

@@ -22,6 +22,8 @@ pub fn parse(line: &str) -> Option<Structured> {
     let v: Value = serde_json::from_str(t).ok()?;
     let o = v.as_object()?;
 
+    // MongoDB 4.4 and later: `{"t":{"$date":…},"s":"E","c":"NETWORK","msg":…}`
+    let mongo = o.get("t").is_some_and(|t| t.get("$date").is_some()) && o.get("s").is_some_and(Value::is_string);
     let level = first(
         o,
         &[&["log.level"], &["log", "level"], &["level"], &["severity"], &["lvl"], &["loglevel"], &["levelname"], &["@l"], &["Level"]],
@@ -30,7 +32,8 @@ pub fn parse(line: &str) -> Option<Structured> {
         Value::String(s) => Level::parse_name(s),
         Value::Number(n) => n.as_i64().map(Level::from_number),
         _ => None,
-    });
+    })
+    .or_else(|| mongo.then(|| super::level::mongo_severity(o["s"].as_str().unwrap_or(""))));
     let logger = text(first(o, &[&["log.logger"], &["log", "logger"], &["logger"], &["logger_name"], &["SourceContext"]]));
     let mut message =
         text(first(o, &[&["message"], &["msg"], &["@m"], &["@mt"], &["MessageTemplate"], &["log"], &["event"]])).unwrap_or_default();
@@ -67,6 +70,26 @@ pub fn parse(line: &str) -> Option<Structured> {
                 .map(|d| if d < 1000.0 { format!(" {:.0}ms", d * 1000.0) } else { format!(" {d:.0}ms") })
                 .unwrap_or_default();
             message = format!("{m} {u} {status}{dur}").trim().to_string();
+        }
+    }
+    // Traefik access logs in JSON: `RequestMethod`, `RequestPath`, `DownstreamStatus`.
+    if let (Some(m), Some(path)) = (o.get("RequestMethod").and_then(Value::as_str), o.get("RequestPath").and_then(Value::as_str)) {
+        let status = o.get("DownstreamStatus").and_then(Value::as_i64).map(|s| s.to_string()).unwrap_or_default();
+        let dur = o.get("Duration").and_then(Value::as_f64).map(|ns| format!(" {:.0}ms", ns / 1e6)).unwrap_or_default();
+        let router = o.get("RouterName").and_then(Value::as_str).map(|r| format!(" ({r})")).unwrap_or_default();
+        message = format!("{m} {path} {status}{dur}{router}").trim().to_string();
+    }
+    // An access log line with a 5xx status is an error, whatever level it was logged at.
+    let status = o.get("status").or_else(|| o.get("DownstreamStatus")).and_then(Value::as_i64);
+    let level = match (status, level) {
+        (Some(500..=599), l) if (is_access || o.contains_key("RequestPath")) && l.is_none_or(|l| l < Level::Error) => Some(Level::Error),
+        (_, l) => l,
+    };
+    // MongoDB puts the details of an error into `attr`.
+    if mongo && let Some(e) = o.get("attr").and_then(|a| a.get("error")) {
+        let detail = e.get("errmsg").and_then(Value::as_str).map(str::to_string).or_else(|| text(Some(e)));
+        if let Some(d) = detail.filter(|d| !d.is_empty()) {
+            message = format!("{message}: {d}");
         }
     }
     if message.is_empty() {
@@ -127,6 +150,28 @@ mod tests {
         assert_eq!(c.level, Some(Level::Info));
         let e = parse(r#"{"level":"error","logger":"http.log.error","msg":"dial tcp 172.18.0.4:8080: connect: connection refused","request":{"method":"GET","uri":"/"},"status":502}"#).unwrap();
         assert_eq!(e.message, "dial tcp 172.18.0.4:8080: connect: connection refused");
+    }
+
+    #[test]
+    fn mongodb_traefik_and_failed_requests() {
+        let m = parse(r#"{"t":{"$date":"2026-10-29T17:00:00.000+00:00"},"s":"E","c":"NETWORK","id":4615610,"ctx":"conn12","msg":"Failed to check socket connectivity","attr":{"error":{"code":6,"codeName":"HostUnreachable","errmsg":"Connection reset by peer"}}}"#).unwrap();
+        assert_eq!((m.level, m.message.as_str()), (Some(Level::Error), "Failed to check socket connectivity: Connection reset by peer"));
+        let i = parse(r#"{"t":{"$date":"2026-10-29T17:00:00.000+00:00"},"s":"I","c":"NETWORK","id":22943,"ctx":"listener","msg":"Connection accepted"}"#).unwrap();
+        assert_eq!(i.level, Some(Level::Info));
+        let d = parse(r#"{"t":{"$date":"2026-10-29T17:00:00.000+00:00"},"s":"D2","c":"COMMAND","id":1,"msg":"run command"}"#).unwrap();
+        assert_eq!(d.level, Some(Level::Debug));
+
+        let t = parse(r#"{"ClientHost":"10.0.0.1","DownstreamStatus":502,"Duration":3021000,"RequestMethod":"POST","RequestPath":"/api/cart","RouterName":"shop@docker","level":"info","msg":"","time":"2026-10-29T17:00:00Z"}"#).unwrap();
+        assert_eq!((t.level, t.message.as_str()), (Some(Level::Error), "POST /api/cart 502 3ms (shop@docker)"));
+        let ok = parse(r#"{"DownstreamStatus":200,"RequestMethod":"GET","RequestPath":"/","level":"info","msg":""}"#).unwrap();
+        assert_eq!(ok.level, Some(Level::Info));
+
+        // Caddy logs a failed request at info level.
+        let c = parse(
+            r#"{"level":"info","logger":"http.log.access.log0","msg":"handled request","request":{"method":"GET","uri":"/"},"status":502}"#,
+        )
+        .unwrap();
+        assert_eq!((c.level, c.message.as_str()), (Some(Level::Error), "GET / 502"));
     }
 
     #[test]

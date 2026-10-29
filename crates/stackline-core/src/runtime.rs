@@ -494,7 +494,12 @@ pub async fn test_connection(cfg: &ConnectionConfig) -> Vec<TestStep> {
     let t = Instant::now();
     match client.get_json::<serde_json::Value>("/version").await {
         Ok(v) => steps.push(TestStep {
-            label: format!("Docker {} (API {})", v["Version"].as_str().unwrap_or("?"), v["ApiVersion"].as_str().unwrap_or("?")),
+            label: format!(
+                "{} {} (API {})",
+                snapshot::engine_name(&v),
+                v["Version"].as_str().unwrap_or("?"),
+                v["ApiVersion"].as_str().unwrap_or("?")
+            ),
             ok: true,
             detail: None,
             ms: t.elapsed().as_millis() as u64,

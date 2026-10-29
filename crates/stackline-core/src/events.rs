@@ -112,7 +112,12 @@ impl EventPoller {
         let cursor = tokio::task::spawn_blocking(move || store.cursor(&conn, CURSOR)).await??;
         let since = cursor.map_or(now - retention_us, |c| c - OVERLAP_US).max(now - retention_us);
         let filters = "%7B%22type%22%3A%5B%22container%22%5D%7D"; // {"type":["container"]}
-        let path = format!("/events?since={}&until={}&filters={filters}", secs(since), secs(now));
+        // Podman 4 sends nothing when `until` is given; `stream=false` ends its stream instead.
+        let path = if snap.host.engine == "Podman" {
+            format!("/events?since={}&stream=false&filters={filters}", secs(since))
+        } else {
+            format!("/events?since={}&until={}&filters={filters}", secs(since), secs(now))
+        };
         let lines = read_lines(client, &path).await?;
 
         let names = Names::of(snap);

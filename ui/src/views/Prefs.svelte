@@ -180,7 +180,7 @@
     {@render select('logPollSecs', 'Fetch new log lines every', 'After the first load Stackline only asks for lines newer than the last one it saw, per replica.', opts([2, 3, 5, 15, 60], s.logPollSecs), (v) => `${v} s`)}
     {@render select('refreshSecs', 'Refresh containers and services every', '', opts([5, 10, 30, 60], s.refreshSecs), (v) => `${v} s`)}
     {@render toggle('collectStats', 'Read CPU and memory per container', 'One extra read-only stats call per container on every refresh.')}
-    <div class="pb hint" style="border-top:1px solid var(--line)">Logs are read separately for every replica, so a multi-line stack trace from one replica never gets mixed with another. Multi-line entries from Java, .NET, Python, Node.js, PostgreSQL and MariaDB are joined automatically, and JSON logs (ECS, Logstash, Serilog, pino, zap and similar) are read field by field.</div>
+    <div class="pb hint" style="border-top:1px solid var(--line)">Logs are read separately for every replica, so a multi-line stack trace from one replica never gets mixed with another. Multi-line entries from Java, .NET, Python, Node.js, Go, Rust, PHP, Ruby, PostgreSQL and MariaDB are joined automatically, levels of Redis, MongoDB and access logs (nginx, Traefik, Caddy: a 5xx status is an error) are recognised, and JSON logs (ECS, Logstash, Serilog, pino, zap, MongoDB and similar) are read field by field.</div>
   </section>
 
   <section class="panel">

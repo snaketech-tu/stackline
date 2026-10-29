@@ -36,6 +36,13 @@ pub type CpuSamples = HashMap<String, CpuSample>;
 /// CPU percent (unknown until there are two samples) and memory bytes.
 type Usage = (Option<f64>, u64);
 
+/// Podman answers the Docker API too; its version lists a "Podman Engine" component.
+pub fn engine_name(version: &Value) -> String {
+    let podman = version["Components"].as_array().is_some_and(|c| c.iter().any(|c| s(&c["Name"]).starts_with("Podman")))
+        || s(&version["Platform"]["Name"]).contains("Podman");
+    if podman { "Podman" } else { "Docker" }.into()
+}
+
 pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot> {
     let info: Value = client.get_json("/info").await?;
     let version: Value = client.get_json("/version").await.unwrap_or(Value::Null);
@@ -54,6 +61,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot
         name: s(&info["Name"]),
         os: s(&info["OperatingSystem"]),
         kernel: s(&info["KernelVersion"]),
+        engine: engine_name(&version),
         docker_version: s(&info["ServerVersion"]),
         api_version: s(&version["ApiVersion"]),
         ncpu: u(&info["NCPU"]) as u32,
@@ -608,6 +616,17 @@ fn natural(s: &str) -> (u64, String) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tells_podman_from_docker() {
+        let podman =
+            json!({ "Platform": { "Name": "linux/amd64/fedora-40" }, "Components": [{ "Name": "Podman Engine", "Version": "5.2.3" }] });
+        let docker =
+            json!({ "Platform": { "Name": "Docker Engine - Community" }, "Components": [{ "Name": "Engine", "Version": "27.3.1" }] });
+        assert_eq!(engine_name(&podman), "Podman");
+        assert_eq!(engine_name(&docker), "Docker");
+        assert_eq!(engine_name(&Value::Null), "Docker");
+    }
 
     #[test]
     fn groups_compose_containers_into_stacks() {

@@ -60,6 +60,48 @@ impl Level {
 /// Finds the level of a plain-text log line, looking only at its first 200 bytes.
 pub fn detect(line: &str) -> Option<Level> {
     let head = &line[..floor_char_boundary(line, 200)];
+    // Access logs (nginx, Apache, Traefik): the status code says it. Checked
+    // first, so a path like `/errors` never sets the level.
+    if let Some(c) = regex!(r#"^\S+ \S+ \S+ \[[^\]]+\] "[A-Z]+ [^"]*" (\d{3}) "#).captures(head) {
+        return Some(if c[1].starts_with('5') { Level::Error } else { Level::Info });
+    }
+    // Go and Rust panics.
+    if regex!(r"^(?:panic: |fatal error: |thread '[^']*' panicked at )").is_match(head) {
+        return Some(Level::Error);
+    }
+    // PHP: `PHP Fatal error:  Uncaught …`, `PHP Warning:  …`
+    if let Some(c) = regex!(
+        r"\bPHP (Fatal error|Parse error|Catchable fatal error|Recoverable fatal error|Warning|Notice|Deprecated|Strict Standards)\b"
+    )
+    .captures(head)
+    {
+        return Some(match &c[1] {
+            "Warning" => Level::Warn,
+            "Notice" | "Deprecated" | "Strict Standards" => Level::Info,
+            _ => Level::Error,
+        });
+    }
+    // Redis: `1:M 29 Oct 2026 17:00:00.123 # Warning…`, the mark after the time is the level.
+    if let Some(c) = regex!(r"^\d+:[XCSM] \d{1,2} \w{3} \d{4} \d{2}:\d{2}:\d{2}\.\d{3} ([.\-*#]) ").captures(head) {
+        return Some(match &c[1] {
+            "#" => Level::Warn,
+            "*" => Level::Info,
+            _ => Level::Debug,
+        });
+    }
+    // MongoDB before 4.4: `2026-10-29T17:00:00.000+0000 E NETWORK  [conn1] …`
+    if let Some(c) = regex!(r"^\d{4}-\d{2}-\d{2}T[\d:.]+[+-]\d{4} ([FEWID])\d? +[A-Z]+ +\[").captures(head) {
+        return Some(mongo_severity(&c[1]));
+    }
+    // zerolog console (Traefik 3): `2026-10-29T17:00:00Z ERR …`
+    if let Some(c) = regex!(r"^\S+ (TRC|DBG|INF|WRN|ERR|FTL|PNC) ").captures(head) {
+        return Some(match &c[1] {
+            "ERR" | "FTL" | "PNC" => Level::Error,
+            "WRN" => Level::Warn,
+            "INF" => Level::Info,
+            _ => Level::Debug,
+        });
+    }
     // Microsoft.Extensions.Logging console format: `warn: Category[0]`
     if let Some(c) = regex!(r"^(trce|dbug|info|warn|fail|crit):\s").captures(head) {
         return Some(match &c[1] {
@@ -103,6 +145,16 @@ pub fn detect(line: &str) -> Option<Level> {
     None
 }
 
+/// MongoDB's severity letters: F, E, W, I and D1 to D5.
+pub fn mongo_severity(s: &str) -> Level {
+    match s.chars().next() {
+        Some('F' | 'E') => Level::Error,
+        Some('W') => Level::Warn,
+        Some('D') => Level::Debug,
+        _ => Level::Info,
+    }
+}
+
 pub fn floor_char_boundary(s: &str, max: usize) -> usize {
     if s.len() <= max {
         return s.len();
@@ -134,6 +186,25 @@ mod tests {
             ("[20:15:20 INF] Request finished", Some(Level::Info)),
             ("warn: Microsoft.AspNetCore.Server.Kestrel[0]", Some(Level::Warn)),
             ("GET /api/cart 200 34ms", None),
+            // Access logs: nginx, Traefik (CLF), Apache.
+            (r#"10.0.0.1 - - [29/Oct/2026:17:00:00 +0000] "GET /errors HTTP/1.1" 200 512 "-" "curl/8""#, Some(Level::Info)),
+            (
+                r#"10.0.0.1 - - [29/Oct/2026:17:00:00 +0000] "POST /api/cart HTTP/1.1" 502 11 "-" "-" 42 "shop@docker" "http://10.0.1.5:80" 3ms"#,
+                Some(Level::Error),
+            ),
+            ("panic: runtime error: invalid memory address or nil pointer dereference", Some(Level::Error)),
+            ("fatal error: all goroutines are asleep - deadlock!", Some(Level::Error)),
+            ("thread 'main' panicked at src/main.rs:5:5:", Some(Level::Error)),
+            ("[29-Oct-2026 17:00:00 UTC] PHP Fatal error:  Uncaught Exception: boom in /var/www/html/index.php:3", Some(Level::Error)),
+            ("[29-Oct-2026 17:00:00 UTC] PHP Warning:  Undefined variable $cart in /var/www/html/cart.php on line 12", Some(Level::Warn)),
+            ("[29-Oct-2026 17:00:00 UTC] PHP Deprecated:  strlen(): Passing null is deprecated", Some(Level::Info)),
+            ("[29-Oct-2026 17:00:00] WARNING: [pool www] server reached pm.max_children setting (5)", Some(Level::Warn)),
+            ("E, [2026-10-29T17:00:00.123456 #1] ERROR -- : Redis::CannotConnectError", Some(Level::Error)),
+            ("1:M 29 Oct 2026 17:00:00.123 # WARNING Memory overcommit must be enabled!", Some(Level::Warn)),
+            ("1:M 29 Oct 2026 17:00:00.123 * Ready to accept connections tcp", Some(Level::Info)),
+            ("2026-10-29T17:00:00.000+0000 E NETWORK  [conn12] SocketException: Broken pipe", Some(Level::Error)),
+            ("2026-10-29T17:00:00Z ERR error=\"service not found\" entryPointName=web routerName=shop@docker", Some(Level::Error)),
+            ("2026-10-29T17:00:00Z WRN Some warning", Some(Level::Warn)),
             ("there was no error here", None),
         ];
         for (line, want) in cases {

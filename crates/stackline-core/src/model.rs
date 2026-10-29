@@ -63,6 +63,9 @@ pub struct Host {
     pub name: String,
     pub os: String,
     pub kernel: String,
+    /// `Docker` or `Podman`, from the version the engine reports.
+    pub engine: String,
+    /// The engine's version (Podman's too).
     pub docker_version: String,
     pub api_version: String,
     pub ncpu: u32,
