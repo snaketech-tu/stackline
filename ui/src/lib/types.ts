@@ -46,7 +46,7 @@ export type Connection =
 
 export interface Settings {
   theme: 'system' | 'light' | 'dark'; retentionDays: number; maxStoreMb: number
-  refreshSecs: number; logPollSecs: number; collectStats: boolean; checkUpdates: boolean
+  refreshSecs: number; logPollSecs: number; collectStats: boolean; checkUpdates: boolean; collectAtStart: boolean
   alertEnabled: boolean; alertWindowMins: number; alertThreshold: number
 }
 
@@ -78,10 +78,12 @@ export interface ServiceUsage { service: string; entries: number; textBytes: num
 /** Stored lines per service, and the services whose lines are being deleted. */
 export interface Usage { services: ServiceUsage[]; deleting: string[] }
 export interface NewGroup { fp: string; pattern: string; count: number; service: string; first: number; sample: string }
+/** A service that logged steadily and then stopped logging. `since` is µs. */
+export interface Quiet { service: string; since: number; busyMinutes: number }
 export interface ErrorSummary {
   byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[]
   /** Oldest stored entry of the connection, µs. */
-  oldest: number | null; newGroups: NewGroup[]
+  oldest: number | null; newGroups: NewGroup[]; quiet: Quiet[]
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'restarting' | 'failed'

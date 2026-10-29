@@ -5,6 +5,11 @@ its GitHub release, and Stackline shows it in the update dialog.
 
 ## Unreleased
 
+### Added
+- **Debug report.** A service's panel has a **Debug report** button that copies a Markdown report for a ticket or a chat: image and configuration, replicas, log counts of the last 24 hours, the most frequent errors with a sample, stops and crashes, and the lines printed just before the last crash. Environment values are left out, since they often hold secrets
+- **Went quiet.** The Overview says when a running service that logged in most minutes of the last two hours has printed nothing for 10 minutes. A process that hangs often looks exactly like that
+- **Collect every connection from the start.** Stackline now connects to all saved connections when it starts and collects their logs, so they are stored when something breaks on a host you did not have open. Switch it off in Preferences to collect only the connections you open
+
 ### Changed
 - **swarmdash is now called Stackline.** Another project already uses the name swarmdash, and the app is about more than swarms. Updating keeps your connections, pins, settings and stored logs: Stackline moves the swarmdash folders over the first time it starts. The single binary is now called `stackline`, its environment variables start with `STACKLINE_` (the `SWARMDASH_` ones still work), and on Windows the installer removes the old swarmdash entry from the app list
 

@@ -158,13 +158,22 @@ window with the stream. **Show more** loads older lines, up to 5,000 at once.
 Stored logs belong to the host or swarm a connection reaches. When you point a
 connection at a different host, its old lines are deleted so the two never mix.
 
-By default Stackline collects the logs of every service. On **Stacks &
+By default Stackline collects the logs of every service, on every saved
+connection from the moment it starts, so the lines are there when something
+breaks on a host you did not have open. Switch off **Collect every connection
+from the start** in Preferences to collect only the connections you open. On **Stacks &
 services**, the **Collect** switches turn collection off for single services or
 whole stacks, and **Only chosen** collects nothing but the services you switch
 on (it starts from your pinned services). A service that is switched on again
 is read from that moment, without fetching what it logged in between. The
 filters you pick on the Logs and Stacks pages stay as they are when you move
 around the app or restart it.
+
+**Debug report** in a service's panel copies a Markdown summary for a ticket:
+configuration, replicas, the most frequent errors, crashes and the lines just
+before the last crash. Environment values are never included. The Overview
+also says when a running service that logged steadily **went quiet** for 10
+minutes, which is often a hanging process.
 
 Collection depends on the logs Docker exposes through its API. Stackline can
 retain logs it has collected, but cannot recover logs Docker already removed

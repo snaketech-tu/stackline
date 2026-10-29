@@ -2,7 +2,7 @@
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
   import { app, LEVELS, LINES, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
-  import { api, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
+  import { api, apiFetch, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
   import { eventColor, eventLabel, isCrash } from '../lib/events'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
@@ -39,6 +39,28 @@
     const t = setTimeout(() => (q = v.trim()), 250)
     return () => clearTimeout(t)
   })
+
+  /** Copies a Markdown report of this service: configuration, errors, crashes and the lines before the last one. */
+  let copying = $state(false)
+  async function copyReport() {
+    if (!name || copying) return
+    copying = true
+    const text = apiFetch(`/c/${encodeURIComponent(app.activeId)}/report?${query({ name })}`).then((r) => r.text())
+    try {
+      // Handing the clipboard a promise keeps the click's permission while the report is built (Safari needs that).
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })) })])
+      } else {
+        await navigator.clipboard.writeText(await text)
+      }
+      app.notify('Debug report copied as Markdown. Paste it into a ticket or a chat.')
+    } catch (e) {
+      const failed = await text.then(() => null, (err) => err)
+      app.notify(failed ? `Could not build the report: ${app.describe(failed)}` : 'The clipboard is not available here.', 'err')
+    } finally {
+      copying = false
+    }
+  }
 
   // The full configuration, read from Docker when the details open and every 30 seconds after.
   let details = $state<ServiceDetails | null>(null)
@@ -150,6 +172,7 @@
 
 <Drawer title={s ? s.fullName : key} size={full ? 'full' : 'wide'}>
   {#snippet actions()}
+    <button class="btn sm ghost" title="Copy a debug report of this service as Markdown: configuration, error groups, crashes and the lines before the last one. Environment values are left out." onclick={copyReport} disabled={copying || !s}><Icon name="copy" size={14} /><span class="hide-sm">{copying ? 'Copying…' : 'Debug report'}</span></button>
     <PinButton {key} />
     <button class="ib hide-sm" title={full ? 'Leave some of the page visible' : 'Use the whole window'} aria-label={full ? 'Smaller' : 'Use the whole window'} onclick={toggleFull}><Icon name={full ? 'minimize' : 'maximize'} size={15} /></button>
     <button class="ib" title="Previous service ( [ )" aria-label="Previous service" onclick={() => step(-1)}><Icon name="chevL" size={16} /></button>

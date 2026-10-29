@@ -18,6 +18,7 @@ pub mod docker;
 pub mod events;
 pub mod logs;
 pub mod model;
+pub mod report;
 pub mod runtime;
 pub mod snapshot;
 pub mod store;

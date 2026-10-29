@@ -123,6 +123,16 @@
       const t = s.tasks.find((t) => t.state === 'running' && t.health === 'unhealthy')
       if (t) out.push({ sev: 'warn', title: `<b>${esc(s.fullName)}</b> reports unhealthy`, why: `replica ${t.slot} · ${t.message ?? ''}`, acts: acts(s) })
     }
+    for (const q of app.errors?.quiet ?? []) {
+      const s = app.services.find((x) => x.fullName === q.service)
+      out.push({
+        sev: 'warn',
+        title: `<b>${esc(q.service)}</b> went quiet`,
+        pill: ['warn', `silent ${ago(q.since / 1000, app.now).replace(/ ago$/, '')}`],
+        why: `No log lines since ${hhmm(q.since / 1000)}, after lines in ${q.busyMinutes} of the 120 minutes before. It still runs, so it may hang.`,
+        acts: s ? acts(s) : [],
+      })
+    }
     for (const g of app.errors?.newGroups ?? []) {
       out.push({
         sev: 'warn',

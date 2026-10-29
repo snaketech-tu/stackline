@@ -57,6 +57,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/c/{id}/events", get(events))
         .route("/c/{id}/errors", get(errors))
         .route("/c/{id}/service", get(service_details))
+        .route("/c/{id}/report", get(report))
         .route("/alerts", get(alerts))
         .route("/alerts/test", post(test_alert))
         .route("/settings", get(get_settings).put(put_settings))
@@ -118,6 +119,7 @@ async fn create_connection(st: St, Json(input): Json<ConnectionInput>) -> Result
         c.connections.push(cc.clone());
         created = Some(cc);
     })?;
+    st.manager.open_all();
     Ok(Json(created.unwrap()))
 }
 
@@ -131,6 +133,7 @@ async fn update_connection(st: St, Path(id): Path<String>, Json(input): Json<Con
             updated = Some(cc.clone());
         }
     })?;
+    st.manager.open_all();
     updated.map(Json).ok_or_else(not_found)
 }
 
@@ -294,10 +297,20 @@ async fn events(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> R
 }
 
 async fn errors(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
-    st.manager.runtime(&id).ok_or_else(not_found)?;
+    let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
     let store = st.manager.store.clone();
     let now = chrono::Utc::now().timestamp_micros();
-    let s = tokio::task::spawn_blocking(move || store.error_summary(&id, now)).await.map_err(|e| anyhow::anyhow!(e))??;
+    let conn = id.clone();
+    let mut s = tokio::task::spawn_blocking(move || store.error_summary(&conn, now)).await.map_err(|e| anyhow::anyhow!(e))??;
+    // Quiet only counts for services that still run and are collected, while
+    // collecting works: a stopped service or a broken connection is silent too.
+    let synced = rt.state().logs_synced_at.is_some_and(|t| now / 1000 - t < 120_000);
+    let collect = st.manager.config().collect.remove(&id).unwrap_or_default();
+    let running: Vec<String> = rt
+        .snapshot()
+        .map(|snap| snap.stacks.iter().flat_map(|st| &st.services).filter(|s| s.running > 0).map(|s| s.full_name.clone()).collect())
+        .unwrap_or_default();
+    s.quiet.retain(|q| synced && collect.wants(&q.service) && running.contains(&q.service));
     Ok(Json(json!(s)))
 }
 
@@ -311,6 +324,63 @@ async fn service_details(st: St, Path(id): Path<String>, Query(p): Query<Service
     let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
     let d = rt.details(&p.name).await?;
     d.map(|d| Json(json!(d))).ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("{} is not running here.", p.name)))
+}
+
+/// A Markdown debug report of one service, from what is stored here and the
+/// service's configuration. See `stackline_core::report`.
+async fn report(st: St, Path(id): Path<String>, Query(p): Query<ServiceParams>) -> Result<Response, ApiError> {
+    use stackline_core::events::Kind;
+    let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
+    let snap = rt.snapshot().ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, "Not connected yet.".into()))?;
+    let service = snap
+        .stacks
+        .iter()
+        .flat_map(|s| &s.services)
+        .find(|s| s.full_name == p.name)
+        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, format!("{} is not running here.", p.name)))?;
+    // The configuration is a nice to have: a report without it still helps.
+    let details = rt.details(&p.name).await.ok().flatten();
+    let now = chrono::Utc::now().timestamp_micros();
+    let day = LogFilter { from: now - 86_400_000_000, to: now + 1, exact_services: vec![p.name.clone()], ..Default::default() };
+    let (store, conn) = (st.manager.store.clone(), id.clone());
+    let (logs, problems, events, summary, before) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let logs = store.query(&conn, &day, 1, 0)?;
+        let problems = store.query(&conn, &LogFilter { levels: vec![Level::Error, Level::Warn], ..day.clone() }, 1, 0)?;
+        let mut events = store.events(&conn, &day, 500)?;
+        events.sort_by_key(|e| e.ts);
+        let summary = store.error_summary(&conn, now)?;
+        // What the replica printed in the 2 minutes before its newest crash.
+        let crash = events.iter().rev().find(|e| matches!(e.kind, Kind::Crash | Kind::Oom | Kind::Failed));
+        let before = match crash {
+            Some(c) => {
+                let f = LogFilter { from: c.ts - 120_000_000, to: c.ts + 15_000_000, sources: vec![c.source.clone()], ..day.clone() };
+                let mut e = store.query(&conn, &f, 1, 40)?.entries;
+                e.reverse();
+                e
+            }
+            None => vec![],
+        };
+        Ok((logs, problems, events, summary, before))
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))??;
+    let quiet = summary.quiet.iter().find(|q| q.service == p.name && service.running > 0);
+    let name = st.manager.config().connections.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or(id);
+    let md = stackline_core::report::markdown(&stackline_core::report::Report {
+        connection: &name,
+        host: &snap.host,
+        service,
+        details: details.as_ref(),
+        total: logs.total,
+        levels: &logs.levels,
+        groups: &problems.groups,
+        events: &events,
+        before_crash: &before,
+        quiet,
+        now: now / 1000,
+        version: env!("CARGO_PKG_VERSION"),
+    });
+    Ok(([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], md).into_response())
 }
 
 async fn alerts(st: St) -> Json<Value> {
@@ -398,6 +468,7 @@ async fn put_settings(st: St, Json(s): Json<Settings>) -> Result<Json<Settings>,
         return Err(bad("The alert threshold must be at least 1 error."));
     }
     let c = st.manager.update_config(|c| c.settings = s)?;
+    st.manager.open_all();
     Ok(Json(c.settings))
 }
 

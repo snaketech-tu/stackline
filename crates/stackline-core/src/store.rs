@@ -414,6 +414,21 @@ pub struct ErrorSummary {
     pub oldest: Option<i64>,
     /// Error groups seen for the first time in the last 15 minutes.
     pub new_groups: Vec<NewGroup>,
+    /// Services that logged steadily and then stopped logging.
+    pub quiet: Vec<Quiet>,
+}
+
+/// A service that wrote lines in most minutes of the two hours before and
+/// nothing in the last ten: often a process that hangs while its container
+/// still runs.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Quiet {
+    pub service: String,
+    /// The end of the last minute with a line, µs.
+    pub since: i64,
+    /// Minutes with lines in the two hours before it went quiet, of 120.
+    pub busy_minutes: u32,
 }
 
 /// An error group that did not exist before the last 15 minutes.
@@ -673,7 +688,12 @@ impl Store {
     }
 
     pub fn error_summary(&self, conn: &str, now: i64) -> Result<ErrorSummary> {
-        self.read(|db| error_summary(db, conn, now))
+        let since = self.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
+        self.read(|db| {
+            let mut s = error_summary(db, conn, now)?;
+            s.quiet = quiet(db, conn, now, since)?;
+            Ok(s)
+        })
     }
 
     /// Writes every matching entry, oldest first. Returns the number written.
@@ -1189,7 +1209,31 @@ fn error_summary(db: &Connection, conn: &str, now: i64) -> Result<ErrorSummary> 
     }
     let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
     let new_groups = new_groups(db, conn, now, oldest)?;
-    Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups })
+    Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups, quiet: Vec::new() })
+}
+
+/// Services that went quiet: lines in at least half the minutes of two hours,
+/// then none for ten minutes. Read from the per-minute counts, so it needs
+/// two hours and ten minutes of counted history.
+fn quiet(db: &Connection, conn: &str, now: i64, minutes_since: i64) -> Result<Vec<Quiet>> {
+    const SILENT: i64 = 10;
+    const BASELINE: i64 = 120;
+    let cut = now.div_euclid(MINUTE) - SILENT;
+    let lo = cut - BASELINE;
+    if minutes_since > lo * MINUTE {
+        return Ok(Vec::new());
+    }
+    let mut st = db.prepare_cached(
+        "SELECT service, SUM(minute < ?3), MAX(minute) FROM minutes
+         WHERE conn = ?1 AND service != '' AND minute >= ?2 AND debug + info + warn + error > 0
+         GROUP BY service HAVING SUM(minute < ?3) >= ?4 AND MAX(minute) < ?3",
+    )?;
+    let rows = st.query_map(params![conn, lo, cut, BASELINE / 2], |r| {
+        Ok(Quiet { service: r.get(0)?, busy_minutes: r.get(1)?, since: (r.get::<_, i64>(2)? + 1) * MINUTE })
+    })?;
+    let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    out.sort_by_key(|q| q.since);
+    Ok(out)
 }
 
 fn export(db: &Connection, conn: &str, f: &LogFilter, format: ExportFormat, out: &mut dyn Write) -> Result<u64> {
@@ -1483,6 +1527,33 @@ mod tests {
         // Less than an hour of history: nothing counts as new yet.
         store.insert("c2", &s1, &entries(&[(now - 10 * min, old), (now - 4 * min, fresh)])).unwrap();
         assert!(store.error_summary("c2", now).unwrap().new_groups.is_empty());
+    }
+
+    #[test]
+    fn a_service_that_stops_logging_goes_quiet() {
+        let store = Store::open_in_memory().unwrap();
+        let min = 60_000_000i64;
+        let now = 1_700_000_000_000_000i64 / min * min + 30_000_000;
+        let lines = |from: i64, to: i64, every: i64| -> Vec<(i64, String)> {
+            (from..to).step_by(every as usize).map(|m| (now - m * min, format!("2026-10-27 INFO tick {m}"))).collect()
+        };
+        let put = |service: &str, l: Vec<(i64, String)>| {
+            let l: Vec<(i64, &str)> = l.iter().map(|(t, s)| (*t, s.as_str())).collect();
+            store.insert("c1", &src(service, "1"), &entries(&l)).unwrap();
+        };
+        // Every minute until 25 minutes ago: quiet.
+        put("shop_hung", lines(25, 180, 1));
+        // Every minute until now: fine.
+        put("shop_busy", lines(0, 180, 1));
+        // Every 5 minutes, last one 14 minutes ago: never logged steadily enough.
+        put("shop_cron", lines(14, 180, 5));
+        let s = store.error_summary("c1", now).unwrap();
+        assert_eq!(s.quiet.len(), 1, "{:?}", s.quiet);
+        assert_eq!(s.quiet[0].service, "shop_hung");
+        assert_eq!(s.quiet[0].since, now - 30_000_000 - 24 * min);
+        assert!(s.quiet[0].busy_minutes >= 100, "{:?}", s.quiet);
+        // An hour earlier it still logged.
+        assert!(store.error_summary("c1", now - 60 * min).unwrap().quiet.is_empty());
     }
 
     #[test]

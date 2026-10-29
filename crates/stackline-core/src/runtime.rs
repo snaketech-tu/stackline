@@ -268,6 +268,18 @@ impl Manager {
         Some(rt)
     }
 
+    /// Starts every saved connection when the setting asks for it, so their
+    /// logs are collected even before anyone opens them. Logs that were never
+    /// read are often the ones needed after a crash.
+    pub fn open_all(self: &Arc<Self>) {
+        let cfg = self.config();
+        if cfg.settings.collect_at_start {
+            for c in &cfg.connections {
+                self.runtime(&c.id);
+            }
+        }
+    }
+
     pub fn stop(&self, id: &str) {
         if let Some(rt) = self.runtimes.lock().unwrap().remove(id) {
             for t in rt.tasks.lock().unwrap().drain(..) {
@@ -522,4 +534,37 @@ pub async fn test_connection(cfg: &ConnectionConfig) -> Vec<TestStep> {
         }),
     }
     steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_saved_connection_collects_from_the_start_unless_switched_off() {
+        let dir = std::env::temp_dir().join(format!("stackline-open-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::in_dir(&dir);
+        let mut cfg = AppConfig::default();
+        // Nothing listens there; the connections only have to start.
+        let local = |id: &str| ConnectionConfig {
+            id: id.into(),
+            name: id.into(),
+            kind: ConnectionKind::Local { endpoint: Some("tcp://127.0.0.1:9".into()) },
+        };
+        cfg.connections = vec![local("a"), local("b")];
+        cfg.settings.collect_at_start = false;
+        cfg.save(&paths.config).unwrap();
+        let m = Manager::new(paths).unwrap();
+        m.open_all();
+        assert!(m.runtimes.lock().unwrap().is_empty());
+
+        m.update_config(|c| c.settings.collect_at_start = true).unwrap();
+        m.open_all();
+        let mut open: Vec<String> = m.runtimes.lock().unwrap().keys().cloned().collect();
+        open.sort();
+        assert_eq!(open, ["a", "b"]);
+        m.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
