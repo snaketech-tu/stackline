@@ -116,9 +116,12 @@ export interface AlertsResponse { alerts: Alert[]; native: boolean }
 
 /** A service together with the stack it belongs to. */
 export interface ServiceRef extends Service { kind: Stack['kind']; key: string }
-export type EventKind = 'start' | 'exit' | 'stop' | 'crash' | 'oom' | 'unhealthy' | 'failed'
+export type EventKind = 'start' | 'exit' | 'stop' | 'crash' | 'oom' | 'unhealthy' | 'failed' | 'deploy'
 /** A container start, stop or crash. `ts` in Unix microseconds, like log entries. */
 export interface DockerEvent {
   ts: number; stack: string; service: string; replica: string; node: string; source: string
   kind: EventKind; exitCode: number | null; detail: string | null
 }
+
+/** A deploy and the error groups that first showed up after it, until the service's next deploy (`until`, µs). */
+export interface Deploy { event: DockerEvent; until: number; newErrors: NewGroup[] }

@@ -39,6 +39,9 @@ that opens the dashboard in your browser.
 - **See when containers crashed.** Starts, stops, crashes, out-of-memory kills
   and failed health checks from Docker's events are marked on the time graphs,
   each with the log lines its replica printed just before.
+- **See what a deploy changed.** Deploys are marked too, with what changed
+  (image, replicas, environment variable names, ports, limits), and errors that
+  only started after a deploy are flagged as **new since deploy**.
 - **See how a service is set up.** Image, command, ports, networks, mounts,
   restart policy, limits, health checks with their latest results, environment
   variables (secret-looking values stay hidden), labels and swarm settings.

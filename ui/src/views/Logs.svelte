@@ -285,7 +285,8 @@
           <span class="sv">{g.services.join(', ')}</span>
           {#if g.exc}<span style="color:var(--exc)">exception</span>{:else}<span>{g.level === 'WARN' ? 'warning' : 'log error'}</span>{/if}
           <span>· last {ago(g.last / 1000, app.now)}</span>
-          {#if fresh.has(g.fp)}<span class="new">new</span>{/if}
+          {#if app.newSinceDeploy.get(g.fp)}{@const d = app.newSinceDeploy.get(g.fp)!}<span class="new" title="First seen after {d.event.service} was deployed at {hhmm(d.event.ts / 1000)}">new since deploy</span>
+          {:else if fresh.has(g.fp)}<span class="new">new</span>{/if}
         </span>
       </button>
     {:else}
