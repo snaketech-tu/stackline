@@ -1,6 +1,6 @@
-// Starts swarmdash for the UI tests: a fresh data folder, a fixed sign-in token,
+// Starts Stackline for the UI tests: a fresh data folder, a fixed sign-in token,
 // and a guard in front of the Docker socket that lets only reads through and
-// writes down every call, so the tests can check that swarmdash stayed read-only.
+// writes down every call, so the tests can check that Stackline stayed read-only.
 import { spawn } from 'node:child_process'
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import http from 'node:http'
@@ -10,9 +10,9 @@ import { fileURLToPath } from 'node:url'
 const here = dirname(fileURLToPath(import.meta.url))
 const RUN = join(here, '.run')
 const root = resolve(here, '..')
-const bin = process.env.SWARMDASH_BIN ?? join(root, 'target', 'debug', 'swarmdash')
+const bin = process.env.STACKLINE_BIN ?? join(root, 'target', 'debug', 'stackline')
 const docker = process.env.DOCKER_SOCK ?? '/var/run/docker.sock'
-const port = process.env.SWARMDASH_PORT ?? '7171'
+const port = process.env.STACKLINE_PORT ?? '7171'
 
 rmSync(RUN, { recursive: true, force: true })
 mkdirSync(join(RUN, 'data'), { recursive: true })
@@ -24,7 +24,7 @@ http
   .createServer((req, res) => {
     appendFileSync(calls, `${req.method} ${req.url}\n`)
     if (req.method !== 'GET' && req.method !== 'HEAD') {
-      res.writeHead(403, { 'content-type': 'application/json' }).end('{"message":"refused by the swarmdash test guard: not a read"}')
+      res.writeHead(403, { 'content-type': 'application/json' }).end('{"message":"refused by the Stackline test guard: not a read"}')
       return
     }
     const up = http.request({ socketPath: docker, method: req.method, path: req.url, headers: req.headers }, (r) => {
@@ -50,7 +50,7 @@ writeFileSync(
 )
 
 const child = spawn(bin, ['serve', '--no-open', '--port', port, '--data-dir', join(RUN, 'data')], {
-  env: { ...process.env, SWARMDASH_TOKEN: process.env.SWARMDASH_TOKEN ?? '0123456789abcdef0123456789abcdef' },
+  env: { ...process.env, STACKLINE_TOKEN: process.env.STACKLINE_TOKEN ?? '0123456789abcdef0123456789abcdef' },
   stdio: 'inherit',
 })
 child.on('exit', (code) => process.exit(code ?? 1))

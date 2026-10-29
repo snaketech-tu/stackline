@@ -1,6 +1,6 @@
 //! SSH access to a remote Docker host.
 //!
-//! swarmdash runs your system `ssh` so that `~/.ssh/config`, the agent, keys and
+//! Stackline runs your system `ssh` so that `~/.ssh/config`, the agent, keys and
 //! ProxyJump all work exactly as in a terminal. One SSH connection forwards a
 //! local TCP port to the remote Docker socket; every API request then goes
 //! through that single connection. Nothing is installed or opened on the server.
@@ -72,7 +72,7 @@ impl SshTunnel {
         cmd.arg("-L").arg(format!("{local_addr}:{}", t.socket));
         cmd.arg(&t.target);
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
-        cmd.env_remove("SWARMDASH_TOKEN");
+        cmd.env_remove("STACKLINE_TOKEN").env_remove("SWARMDASH_TOKEN");
         #[cfg(windows)]
         {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -123,7 +123,7 @@ impl SshTunnel {
         matches!(self.child.try_wait(), Ok(None))
     }
 
-    /// Stops ssh right away, e.g. before swarmdash exits or restarts.
+    /// Stops ssh right away, e.g. before Stackline exits or restarts.
     pub fn kill(&mut self) {
         let _ = self.child.start_kill();
     }
@@ -140,9 +140,9 @@ fn free_port() -> Result<u16> {
     Ok(l.local_addr()?.port())
 }
 
-/// The ssh client to run: `SWARMDASH_SSH` if set, otherwise `ssh` from PATH.
+/// The ssh client to run: `STACKLINE_SSH` (or `SWARMDASH_SSH`) if set, otherwise `ssh` from PATH.
 fn ssh_binary() -> String {
-    std::env::var("SWARMDASH_SSH").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "ssh".to_string())
+    crate::config::env_var("SSH").filter(|s| !s.is_empty()).unwrap_or_else(|| "ssh".to_string())
 }
 
 fn expand_tilde(p: &str) -> String {

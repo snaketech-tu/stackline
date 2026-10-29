@@ -34,7 +34,7 @@
       <tr>
         <th class="pincell"><span class="sr">Pin</span></th><th>Service</th>{#if stackCol}<th>Stack</th>{/if}<th>Replicas</th>
         {#if full}<th class="hide-sm">Mode</th><th class="hide-sm">Image</th><th class="hide-sm">Ports</th>{/if}
-        <th class="hide-sm">CPU</th><th class="hide-sm">Memory</th><th>Errors 1h</th>{#if collectCol}<th class="collectcell" title="Whether swarmdash collects and stores the logs of the service">Collect</th>{/if}<th class="hide-sm">Updated</th><th class="actcell hide-sm"><span class="sr">Actions</span></th>
+        <th class="hide-sm">CPU</th><th class="hide-sm">Memory</th><th>Errors 1h</th>{#if collectCol}<th class="collectcell" title="Whether Stackline collects and stores the logs of the service">Collect</th>{/if}<th class="hide-sm">Updated</th><th class="actcell hide-sm"><span class="sr">Actions</span></th>
       </tr>
     </thead>
     <tbody>

@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use swarmdash::{ServeOptions, start, update};
-use swarmdash_core::config::Paths;
+use stackline::{ServeOptions, start, update};
+use stackline_core::config::Paths;
 
 /// A read-only dashboard for Docker Swarm and Compose stacks.
 #[derive(Parser)]
@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
     // Remember where we were started from: after a self-update the running
     // file has been swapped and the new one must be started from this path.
     let exe = std::env::current_exe()?;
-    let restarted = std::env::var_os("SWARMDASH_RESTARTED").is_some();
+    let restarted = stackline_core::config::env_var("RESTARTED").is_some();
     let (port, host, no_open, data_dir) = match cli.command {
         Some(Command::Serve { port, host, no_open, data_dir }) => (port, host, no_open, data_dir),
         None => (7070, IpAddr::from([127, 0, 0, 1]), false, None),
@@ -51,9 +51,9 @@ async fn main() -> Result<()> {
     let server = start(ServeOptions { addr: SocketAddr::new(host, port), paths, desktop: false, installer: None, notifier: None }).await?;
     let url = server.url();
     if restarted {
-        println!("swarmdash {} is running at {url}", env!("CARGO_PKG_VERSION"));
+        println!("Stackline {} is running at {url}", env!("CARGO_PKG_VERSION"));
     } else {
-        println!("swarmdash is running. Open this link to use it:\n\n  {url}\n\nPress Ctrl+C to stop.");
+        println!("Stackline is running. Open this link to use it:\n\n  {url}\n\nPress Ctrl+C to stop.");
         if !no_open {
             let _ = webbrowser::open(&url);
         }

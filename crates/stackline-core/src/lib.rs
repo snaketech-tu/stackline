@@ -1,4 +1,4 @@
-//! swarmdash core: a read-only view of Docker hosts, swarms and their logs.
+//! Stackline core: a read-only view of Docker hosts, swarms and their logs.
 
 /// Compiles a regular expression once and caches it.
 macro_rules! regex {

@@ -1,5 +1,5 @@
-# A small Compose project that writes the log formats swarmdash understands.
-# Start it with `docker compose -p demo up -d` and point swarmdash at this computer.
+# A small Compose project that writes the log formats Stackline understands.
+# Start it with `docker compose -p demo up -d` and point Stackline at this computer.
 services:
   app:
     image: alpine:3.20

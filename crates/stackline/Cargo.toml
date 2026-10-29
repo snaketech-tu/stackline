@@ -1,5 +1,5 @@
 [package]
-name = "swarmdash"
+name = "stackline"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -19,7 +19,7 @@ self-replace = "1.5"
 semver = "1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-swarmdash-core = { path = "../swarmdash-core" }
+stackline-core = { path = "../stackline-core" }
 tokio = { version = "1.54.1", features = ["full"] }
 tokio-util = { version = "0.7.20", features = ["io-util"] }
 tracing = "0.1.44"

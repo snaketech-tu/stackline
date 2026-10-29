@@ -1,5 +1,5 @@
 #!/bin/sh
-# Prints realistic log lines for the swarmdash demo stack. $KIND picks the format.
+# Prints realistic log lines for the Stackline demo stack. $KIND picks the format.
 n=0
 ts() { date -u +%Y-%m-%dT%H:%M:%S.000Z; }
 while true; do

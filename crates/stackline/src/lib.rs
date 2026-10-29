@@ -1,5 +1,5 @@
-//! The swarmdash HTTP server: a JSON API over the core plus the embedded web UI.
-//! Used by `swarmdash serve` and by the desktop app.
+//! The Stackline HTTP server: a JSON API over the core plus the embedded web UI.
+//! Used by `stackline serve` and by the desktop app.
 
 mod api;
 pub mod update;
@@ -9,9 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
-use swarmdash_core::alerts::Notifier;
-use swarmdash_core::config::Paths;
-use swarmdash_core::runtime::Manager;
+use stackline_core::alerts::Notifier;
+use stackline_core::config::Paths;
+use stackline_core::runtime::Manager;
 use update::{DesktopInstaller, Updater};
 
 pub struct ServeOptions {
@@ -19,7 +19,7 @@ pub struct ServeOptions {
     pub paths: Paths,
     /// Running inside the desktop app (changes how downloads are saved).
     pub desktop: bool,
-    /// The desktop app's updater; without one, swarmdash updates its own executable.
+    /// The desktop app's updater; without one, Stackline updates its own executable.
     pub installer: Option<Arc<dyn DesktopInstaller>>,
     /// The desktop app's native notifications; without them the page shows alerts.
     pub notifier: Option<Arc<dyn Notifier>>,
@@ -60,9 +60,8 @@ pub async fn start(opts: ServeOptions) -> Result<Server> {
         manager.alerts.set_notifier(n);
     }
     // After an update the new process keeps the old token, so open tabs stay signed in.
-    let restarted = std::env::var_os("SWARMDASH_RESTARTED").is_some();
-    let token = std::env::var("SWARMDASH_TOKEN")
-        .ok()
+    let restarted = stackline_core::config::env_var("RESTARTED").is_some();
+    let token = stackline_core::config::env_var("TOKEN")
         .filter(|t| t.len() >= 32 && t.chars().all(|c| c.is_ascii_hexdigit()))
         .unwrap_or_else(random_token);
     let listener = bind(opts.addr, restarted).await?;

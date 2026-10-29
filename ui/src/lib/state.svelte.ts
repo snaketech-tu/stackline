@@ -35,9 +35,10 @@ export const PRESETS: Record<Exclude<Preset, 'auto'>, number> = { '15m': 15, '1h
 export const LEVELS: Level[] = ['ERROR', 'WARN', 'INFO', 'DEBUG']
 export type StackFilter = 'all' | 'problems' | 'pinned'
 
+/** Reads a remembered setting. Settings saved before the rename from swarmdash to Stackline are read under their old name. */
 export function load(key: string): string | null {
   try {
-    return localStorage.getItem(key)
+    return localStorage.getItem(key) ?? localStorage.getItem(key.replace(/^stackline-/, 'swarmdash-'))
   } catch {
     return null
   }
@@ -117,8 +118,8 @@ class LogsState extends LogFilters {
   live = $state(false)
   collapse = $state(true)
   /** Error groups above the stream (it gets the full width) or beside it. */
-  groupsAt = $state<'top' | 'side'>(load('swarmdash-groups-at') === 'side' ? 'side' : 'top')
-  groupsOpen = $state(load('swarmdash-groups-open') !== '0')
+  groupsAt = $state<'top' | 'side'>(load('stackline-groups-at') === 'side' ? 'side' : 'top')
+  groupsOpen = $state(load('stackline-groups-open') !== '0')
   /** The stream fills the window. */
   maxi = $state(false)
 
@@ -153,12 +154,12 @@ class LogsState extends LogFilters {
 
   setGroupsAt(v: 'top' | 'side') {
     this.groupsAt = v
-    save('swarmdash-groups-at', v)
+    save('stackline-groups-at', v)
   }
 
   toggleGroups() {
     this.groupsOpen = !this.groupsOpen
-    save('swarmdash-groups-open', this.groupsOpen ? '1' : '0')
+    save('stackline-groups-open', this.groupsOpen ? '1' : '0')
   }
 
   setPreset(p: Preset) {
@@ -213,7 +214,7 @@ class LogsState extends LogFilters {
   restoreSources(conn: string) {
     this.sources.clear()
     try {
-      for (const k of JSON.parse(load(`swarmdash-sources-${conn}`) ?? '[]')) if (typeof k === 'string') this.sources.add(k)
+      for (const k of JSON.parse(load(`stackline-sources-${conn}`) ?? '[]')) if (typeof k === 'string') this.sources.add(k)
     } catch {
       // A damaged entry means no picked sources.
     }
@@ -238,7 +239,7 @@ class LogsState extends LogFilters {
 class AppState {
   meta = $state<Meta | null>(null)
   connections = $state<Connection[]>([])
-  activeId = $state(load('swarmdash-conn') ?? 'local')
+  activeId = $state(load('stackline-conn') ?? 'local')
   /** Replaced as a whole on every refresh, so it needs no deep reactivity. */
   snap = $state.raw<Snapshot | null>(null)
   conn = $state<ConnState | null>(null)
@@ -252,15 +253,15 @@ class AppState {
   drawer = $state<Drawer>(null)
   palette = $state(false)
   /** Filters of the stacks view, set from the overview too. */
-  stackFilter = $state<StackFilter>((load('swarmdash-stack-filter') as StackFilter) || 'all')
-  stackQ = $state(load('swarmdash-stack-q') ?? '')
-  theme = $state<Theme>((load('swarmdash-theme') as Theme) || 'system')
+  stackFilter = $state<StackFilter>((load('stackline-stack-filter') as StackFilter) || 'all')
+  stackQ = $state(load('stackline-stack-q') ?? '')
+  theme = $state<Theme>((load('stackline-theme') as Theme) || 'system')
   toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null)
   /** Set when the API cannot be used at all (server gone, signed out). */
   fatal = $state<string | null>(null)
   now = $state(Date.now())
   /** The update banner was dismissed for this version. */
-  dismissed = $state(load('swarmdash-update-dismissed') ?? '')
+  dismissed = $state(load('stackline-update-dismissed') ?? '')
   logs = new LogsState(() => {
     const now = Date.now()
     const keep = now - (this.settings?.retentionDays ?? 2) * 86400e3
@@ -294,7 +295,7 @@ class AppState {
     $effect.root(() => {
       $effect(() => {
         const v = JSON.stringify([...this.logs.sources])
-        save(`swarmdash-sources-${untrack(() => this.activeId)}`, v)
+        save(`stackline-sources-${untrack(() => this.activeId)}`, v)
       })
       // The address of the Logs page follows its filters, so it can be bookmarked,
       // reloaded or copied. Replaced in place: filters are not steps of Back.
@@ -304,8 +305,8 @@ class AppState {
         if (location.hash !== h) history.replaceState(history.state, '', h)
       })
       $effect(() => {
-        save('swarmdash-stack-filter', this.stackFilter)
-        save('swarmdash-stack-q', this.stackQ)
+        save('stackline-stack-filter', this.stackFilter)
+        save('stackline-stack-q', this.stackQ)
       })
     })
   }
@@ -332,10 +333,10 @@ class AppState {
       this.settings = settings
       if (!connections.some((c) => c.id === this.activeId)) {
         const missing = this.#linkConn
-        this.activeId = connections.find((c) => c.id === load('swarmdash-conn'))?.id ?? connections[0]?.id ?? 'local'
+        this.activeId = connections.find((c) => c.id === load('stackline-conn'))?.id ?? connections[0]?.id ?? 'local'
         if (missing) this.notify(`This link is for the connection “${missing}”, which is not set up here. It shows ${this.active?.name ?? 'another one'} instead.`, 'err')
         else this.logs.restoreSources(this.activeId)
-      } else if (this.#linkConn) save('swarmdash-conn', this.activeId)
+      } else if (this.#linkConn) save('stackline-conn', this.activeId)
       this.#linkConn = null
     } catch (e) {
       this.fatal = this.describe(e)
@@ -379,7 +380,7 @@ class AppState {
     if (this.alertsNative || this.meta?.desktop || typeof Notification === 'undefined' || Notification.permission !== 'granted') return
     try {
       const body = `${text}${a.top ? `\nMost frequent: ${a.top}${a.topService ? ` (${a.topService})` : ''}` : ''}`
-      const n = new Notification(`Errors on ${a.name}`, { body, tag: `swarmdash-${a.conn}` })
+      const n = new Notification(`Errors on ${a.name}`, { body, tag: `stackline-${a.conn}` })
       n.onclick = () => {
         window.focus()
         this.openAlert(a)
@@ -424,9 +425,9 @@ class AppState {
 
   describe(e: unknown): string {
     if (e instanceof ApiError && e.status === 401)
-      return 'This page is not signed in. Open swarmdash with the link it printed when it started.'
+      return 'This page is not signed in. Open Stackline with the link it printed when it started.'
     if (e instanceof ApiError) return e.message
-    return 'swarmdash is not responding. Is it still running?'
+    return 'Stackline is not responding. Is it still running?'
   }
 
   route() {
@@ -464,7 +465,7 @@ class AppState {
   select(id: string) {
     if (id === this.activeId) return
     this.activeId = id
-    save('swarmdash-conn', id)
+    save('stackline-conn', id)
     this.snap = null
     this.conn = null
     this.errors = null
@@ -613,7 +614,7 @@ class AppState {
 
   setTheme(t: Theme) {
     this.theme = t
-    save('swarmdash-theme', t)
+    save('stackline-theme', t)
     this.applyTheme(t)
     if (this.settings && this.settings.theme !== t) {
       const s = { ...this.settings, theme: t }
@@ -686,7 +687,7 @@ class AppState {
   dismissUpdate() {
     const v = this.update?.releases[0]?.version ?? ''
     this.dismissed = v
-    save('swarmdash-update-dismissed', v)
+    save('stackline-update-dismissed', v)
   }
 
   /** After an update the server restarts. Reload once the new version answers. */
@@ -707,7 +708,7 @@ class AppState {
         // Still restarting.
       }
     }
-    this.notify('swarmdash did not come back after the update. Start it again by hand.', 'err')
+    this.notify('Stackline did not come back after the update. Start it again by hand.', 'err')
   }
 
   /** Opens a link in the system browser. The desktop window cannot open new tabs itself. */

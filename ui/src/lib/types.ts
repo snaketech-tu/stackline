@@ -1,4 +1,4 @@
-// Mirrors the JSON returned by the swarmdash API (crates/swarmdash-core).
+// Mirrors the JSON returned by the Stackline API (crates/stackline-core).
 
 export type Level = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
 

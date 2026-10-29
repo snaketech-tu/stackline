@@ -1,4 +1,4 @@
-//! What swarmdash shows: one host (or swarm), its nodes, stacks, services and replicas.
+//! What Stackline shows: one host (or swarm), its nodes, stacks, services and replicas.
 //!
 //! The same model covers swarm mode (stacks of swarm services, tasks as replicas)
 //! and plain Docker (Compose projects as stacks, containers as replicas).
@@ -94,7 +94,7 @@ pub struct Node {
     pub ncpu: u32,
     pub mem_total: u64,
     pub labels: BTreeMap<String, String>,
-    /// True for the node swarmdash is connected to.
+    /// True for the node Stackline is connected to.
     pub is_local: bool,
     pub cpu_percent: Option<f64>,
     pub mem_used: Option<u64>,

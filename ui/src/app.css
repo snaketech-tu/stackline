@@ -6,7 +6,7 @@
 @import '@fontsource/jetbrains-mono/400.css';
 @import '@fontsource/jetbrains-mono/600.css';
 
-/* swarmdash UI styles. Layout: app shell — fixed sidebar + top bar, scrolling main view; sidebar turns into a top tab strip on phones */
+/* Stackline UI styles. Layout: app shell — fixed sidebar + top bar, scrolling main view; sidebar turns into a top tab strip on phones */
 :root{
   --bg:#f2f5f7; --panel:#ffffff; --panel-2:#f5f8fa; --line:#e2e8ed; --fg:#0f1b24; --muted:#5d6d7a; --accent:#0d8a86; --accent-soft:#ddf2f0; --ok:#1d9254; --warn:#c27a0a; --err:#d93a3a; --exc:#8b55d9; --dbg:#9aa7b2; --info:#4796b5; --side:#0e1a21; --side-2:#16252e; --side-fg:#e6eef2; --side-muted:#8ea3af; --glow:rgba(13,138,134,.10); --shadow:0 1px 2px rgba(15,35,48,.05),0 8px 24px -12px rgba(15,35,48,.12);
   --sans:"Plus Jakarta Sans",system-ui,-apple-system,"Segoe UI",sans-serif;

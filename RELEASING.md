@@ -1,4 +1,4 @@
-# Releasing swarmdash
+# Releasing Stackline
 
 Releases are built by GitHub Actions (`.github/workflows/release.yml`). The
 workflow tags the commit, creates a draft release, uploads the desktop
@@ -7,23 +7,23 @@ file is there.
 
 ## One-time setup: the update signing key
 
-Every download that swarmdash installs by itself is checked against a public
+Every download that Stackline installs by itself is checked against a public
 key that is built into the app. Create the key pair once, on your own
 computer:
 
 ```sh
 cd desktop
 npm ci
-npx tauri signer generate -w ~/.tauri/swarmdash.key
+npx tauri signer generate -w ~/.tauri/stackline.key
 ```
 
 Then:
 
 1. Add two repository secrets under *Settings → Secrets and variables → Actions*:
-   - `TAURI_SIGNING_PRIVATE_KEY`: the contents of `~/.tauri/swarmdash.key`
+   - `TAURI_SIGNING_PRIVATE_KEY`: the contents of `~/.tauri/stackline.key`
    - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: the password you chose
-2. Put the contents of `~/.tauri/swarmdash.key.pub` into
-   `crates/swarmdash/updater.pub` and into `plugins.updater.pubkey` in
+2. Put the contents of `~/.tauri/stackline.key.pub` into
+   `crates/stackline/updater.pub` and into `plugins.updater.pubkey` in
    `desktop/src-tauri/tauri.conf.json`, then commit both. CI checks that
    they are the same.
 
@@ -72,7 +72,7 @@ changelog has no section for the version, or if the signing key is missing.
 
 | File | Used by |
 | --- | --- |
-| `swarmdash-<target>[.exe]` and `.sig` | `swarmdash serve`; it replaces itself with the file for its platform |
+| `stackline-<target>[.exe]` and `.sig` | `stackline serve`; it replaces itself with the file for its platform |
 | `.msi`, `.exe` (NSIS), `.dmg`, `.app.tar.gz`, `.deb`, `.rpm`, `.AppImage` and their `.sig` | the desktop app and first-time installs |
 | `latest.json` | the desktop app's updater |
 

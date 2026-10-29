@@ -84,4 +84,4 @@
     </table>
   </div>
 </section>
-<div class="hint" style="padding:0 4px">Click a connection to open its overview. swarmdash keeps pins and stored logs per connection.</div>
+<div class="hint" style="padding:0 4px">Click a connection to open its overview. Stackline keeps pins and stored logs per connection.</div>

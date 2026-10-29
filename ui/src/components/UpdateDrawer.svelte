@@ -46,19 +46,19 @@
   const date = (s: string | null) => (s ? new Date(s).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '')
 </script>
 
-<Drawer title="Update swarmdash">
+<Drawer title="Update Stackline">
   {#if !u}
     <div class="center-empty"><span class="spinner"></span></div>
   {:else if !latest}
     <div class="update-card">
       <span class="big">You're up to date</span>
-      <span class="muted">swarmdash {u.current} is the newest version.</span>
+      <span class="muted">Stackline {u.current} is the newest version.</span>
       <div><button class="btn" onclick={check} disabled={u.phase === 'checking'}>{u.phase === 'checking' ? 'Checking…' : 'Check again'}</button></div>
     </div>
     {#if u.error}<div class="err-banner">{u.error}</div>{/if}
   {:else}
     <div class="update-card">
-      <span class="big">swarmdash {latest.version} is available</span>
+      <span class="big">Stackline {latest.version} is available</span>
       <span class="muted">You have {u.current}.{#if u.releases.length > 1}{' '}That is {u.releases.length} releases behind.{/if}</span>
 
       {#if u.phase === 'downloading'}
@@ -69,13 +69,13 @@
         <span class="muted" style="font-size:12.5px">Checking the signature and installing…</span>
       {:else if u.phase === 'restarting'}
         <div class="progress indet"><i></i></div>
-        <span class="muted" style="font-size:12.5px">Restarting swarmdash. This page reloads by itself in a moment.</span>
+        <span class="muted" style="font-size:12.5px">Restarting Stackline. This page reloads by itself in a moment.</span>
       {:else if u.canInstall}
         <div style="display:flex;gap:8px;flex-wrap:wrap">
           <button class="btn pri" onclick={install} disabled={starting}><Icon name="download" size={14} />Update and restart</button>
           <button class="btn ghost" onclick={later}>Later</button>
         </div>
-        <span class="muted" style="font-size:12px">Downloads the new version, checks its signature, installs it and restarts swarmdash. Your connections, pins and stored logs are kept.</span>
+        <span class="muted" style="font-size:12px">Downloads the new version, checks its signature, installs it and restarts Stackline. Your connections, pins and stored logs are kept.</span>
       {:else}
         <span style="font-size:13px">{u.installHint}</span>
         <div style="display:flex;gap:8px;flex-wrap:wrap">

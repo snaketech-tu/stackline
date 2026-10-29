@@ -1,6 +1,6 @@
-// The desktop app: runs the swarmdash server on a random local port and shows
+// The desktop app: runs the Stackline server on a random local port and shows
 // it in a native window. Updates come through Tauri's updater, which verifies
-// the download with the same key as the `swarmdash serve` binaries.
+// the download with the same key as the `stackline serve` binaries.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::future::Future;
@@ -9,15 +9,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use swarmdash::update::{DesktopInstaller, Progress};
-use swarmdash::{ServeOptions, Server};
-use swarmdash_core::alerts::Notifier;
-use swarmdash_core::config::Paths;
+use stackline::update::{DesktopInstaller, Progress};
+use stackline::{ServeOptions, Server};
+use stackline_core::alerts::Notifier;
+use stackline_core::config::Paths;
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_notification::NotificationExt;
 use tauri_plugin_updater::UpdaterExt;
 
-const PUBKEY: &str = include_str!("../../../crates/swarmdash/updater.pub");
+const PUBKEY: &str = include_str!("../../../crates/stackline/updater.pub");
 
 struct TauriInstaller(AppHandle);
 
@@ -80,9 +80,9 @@ fn main() {
                 installer: Some(installer),
                 notifier: Some(Arc::new(TauriNotifier(app.handle().clone()))),
             };
-            let server = tauri::async_runtime::block_on(swarmdash::start(opts))?;
+            let server = tauri::async_runtime::block_on(stackline::start(opts))?;
             WebviewWindowBuilder::new(app, "main", WebviewUrl::External(server.url().parse()?))
-                .title("swarmdash")
+                .title("Stackline")
                 .inner_size(1360.0, 860.0)
                 .min_inner_size(380.0, 520.0)
                 .build()?;
@@ -90,7 +90,7 @@ fn main() {
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("swarmdash could not start")
+        .expect("Stackline could not start")
         .run(|app, event| {
             if let RunEvent::Exit = event
                 && let Some(server) = app.try_state::<Server>()

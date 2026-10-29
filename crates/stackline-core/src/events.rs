@@ -165,7 +165,7 @@ async fn read_lines(client: &DockerClient, path: &str) -> Result<Vec<String>> {
 
 /// What the snapshot knows to name events by.
 struct Names {
-    /// This host, or the swarm node swarmdash is connected to.
+    /// This host, or the swarm node Stackline is connected to.
     local: String,
     /// Swarm node IDs to host names, for global services.
     nodes: HashMap<String, String>,

@@ -3970,6 +3970,71 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
+name = "stackline"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "getrandom 0.4.3",
+ "http-body-util",
+ "mime_guess",
+ "minisign-verify",
+ "rust-embed",
+ "self-replace",
+ "semver",
+ "serde",
+ "serde_json",
+ "stackline-core",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "ureq",
+ "webbrowser",
+]
+
+[[package]]
+name = "stackline-core"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "chrono",
+ "dirs",
+ "futures-util",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "regex",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "xxhash-rust",
+]
+
+[[package]]
+name = "stackline-desktop"
+version = "0.4.1"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "stackline",
+ "stackline-core",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-notification",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-updater",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "static_vcruntime"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4010,71 +4075,6 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
-
-[[package]]
-name = "swarmdash"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "chrono",
- "clap",
- "getrandom 0.4.3",
- "http-body-util",
- "mime_guess",
- "minisign-verify",
- "rust-embed",
- "self-replace",
- "semver",
- "serde",
- "serde_json",
- "swarmdash-core",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "tracing-subscriber",
- "ureq",
- "webbrowser",
-]
-
-[[package]]
-name = "swarmdash-core"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "bytes",
- "chrono",
- "dirs",
- "futures-util",
- "http-body-util",
- "hyper",
- "hyper-util",
- "regex",
- "rusqlite",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "xxhash-rust",
-]
-
-[[package]]
-name = "swarmdash-desktop"
-version = "0.4.1"
-dependencies = [
- "anyhow",
- "serde_json",
- "swarmdash",
- "swarmdash-core",
- "tauri",
- "tauri-build",
- "tauri-plugin-notification",
- "tauri-plugin-single-instance",
- "tauri-plugin-updater",
- "tracing-subscriber",
-]
 
 [[package]]
 name = "swift-rs"

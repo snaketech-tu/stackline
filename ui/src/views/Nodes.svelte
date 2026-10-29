@@ -49,6 +49,6 @@
     </table>
   </div>
   {#if snap.nodes.some((n) => !n.isLocal && n.cpuPercent === null)}
-    <div class="pb hint">CPU and memory are only read for the node swarmdash is connected to. Docker does not offer them for other nodes without connecting to each one.</div>
+    <div class="pb hint">CPU and memory are only read for the node Stackline is connected to. Docker does not offer them for other nodes without connecting to each one.</div>
   {/if}
 </section>

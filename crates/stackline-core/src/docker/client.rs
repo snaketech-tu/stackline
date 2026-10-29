@@ -1,6 +1,6 @@
 //! A deliberately small Docker Engine API client.
 //!
-//! swarmdash is read-only by construction: this client can only send `GET`
+//! Stackline is read-only by construction: this client can only send `GET`
 //! requests. There is no code path that creates, updates or removes anything.
 
 use std::time::Duration;
@@ -44,7 +44,7 @@ impl DockerClient {
             .method(Method::GET)
             .uri(path_and_query)
             .header(HOST, "docker")
-            .header(USER_AGENT, concat!("swarmdash/", env!("CARGO_PKG_VERSION")))
+            .header(USER_AGENT, concat!("stackline/", env!("CARGO_PKG_VERSION")))
             .body(Empty::<Bytes>::new())?;
         let res = sender.send_request(req).await.context("Docker request failed")?;
         Ok(res)

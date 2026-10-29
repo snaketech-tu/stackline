@@ -70,7 +70,7 @@
     try {
       await post('/store/clear', {})
       confirmClear = false
-      app.notify('Stored logs cleared. swarmdash fetches recent lines again.')
+      app.notify('Stored logs cleared. Stackline fetches recent lines again.')
       loadStats()
     } catch (e) {
       app.notify(app.describe(e), 'err')
@@ -81,7 +81,7 @@
     try {
       await app.checkUpdate()
       if (app.update?.releases.length) app.drawer = { kind: 'update' }
-      else if (app.update?.phase === 'upToDate') app.notify(`swarmdash ${app.update.current} is the newest version.`)
+      else if (app.update?.phase === 'upToDate') app.notify(`Stackline ${app.update.current} is the newest version.`)
     } catch (e) {
       app.notify(app.describe(e), 'err')
     }
@@ -109,7 +109,7 @@
       if (r.native) return app.notify('Test notification sent.')
       await askPermission()
       if (permission !== 'granted') return app.notify('The browser blocks notifications for this page. Allow them in the site settings.', 'err')
-      new Notification('Errors on your server', { body: `This is how swarmdash tells you about ${s!.alertThreshold} or more errors in ${s!.alertWindowMins} minutes.` })
+      new Notification('Errors on your server', { body: `This is how Stackline tells you about ${s!.alertThreshold} or more errors in ${s!.alertWindowMins} minutes.` })
     } catch (e) {
       app.notify(app.describe(e), 'err')
     }
@@ -147,11 +147,11 @@
       </span>
       <span class="d">
         Counts the errors each connection logged and sends one notification when the count reaches the threshold, then waits until it drops again.
-        Covers every connection you opened since swarmdash started, and only reads the logs stored on this computer.
+        Covers every connection you opened since Stackline started, and only reads the logs stored on this computer.
         {#if !native}
-          {#if permission === 'denied'}<b style="color:var(--err)">This browser blocks notifications for swarmdash. Allow them in the site settings; until then alerts only show inside the page.</b>
+          {#if permission === 'denied'}<b style="color:var(--err)">This browser blocks notifications for Stackline. Allow them in the site settings; until then alerts only show inside the page.</b>
           {:else if permission === 'unsupported'}This browser cannot show notifications, so alerts show inside the page.
-          {:else}Notifications show while swarmdash is open in a browser tab.{/if}
+          {:else}Notifications show while Stackline is open in a browser tab.{/if}
         {/if}
       </span>
     </div>
@@ -176,7 +176,7 @@
     <div class="ph"><h2>Log collection</h2><span class="pill ok" style="font-size:11.5px">read-only</span></div>
     {@render select('retentionDays', 'Keep logs for', 'Older lines are deleted from this computer. The server is never touched.', opts([1, 2, 3, 7, 14, 30, 90], s.retentionDays), (d) => (d === 1 ? '1 day' : `${d} days`))}
     {@render select('maxStoreMb', 'Max local storage', 'When the store is full, the oldest lines go first.', opts([512, 1024, 2048, 5120, 10240, 20480], s.maxStoreMb), (mb) => (mb >= 1024 ? mb / 1024 + ' GB' : mb + ' MB'))}
-    {@render select('logPollSecs', 'Fetch new log lines every', 'After the first load swarmdash only asks for lines newer than the last one it saw, per replica.', opts([2, 3, 5, 15, 60], s.logPollSecs), (v) => `${v} s`)}
+    {@render select('logPollSecs', 'Fetch new log lines every', 'After the first load Stackline only asks for lines newer than the last one it saw, per replica.', opts([2, 3, 5, 15, 60], s.logPollSecs), (v) => `${v} s`)}
     {@render select('refreshSecs', 'Refresh containers and services every', '', opts([5, 10, 30, 60], s.refreshSecs), (v) => `${v} s`)}
     {@render toggle('collectStats', 'Read CPU and memory per container', 'One extra read-only stats call per container on every refresh.')}
     <div class="pb hint" style="border-top:1px solid var(--line)">Logs are read separately for every replica, so a multi-line stack trace from one replica never gets mixed with another. Multi-line entries from Java, .NET, Python, Node.js, PostgreSQL and MariaDB are joined automatically, and JSON logs (ECS, Logstash, Serilog, pino, zap and similar) are read field by field.</div>
@@ -196,7 +196,7 @@
         {:else}Not checked yet{/if}
       </span>
     </div>
-    {@render toggle('checkUpdates', 'Check for a new version when swarmdash starts', 'Asks GitHub for the list of releases. Nothing is downloaded until you choose to update.')}
+    {@render toggle('checkUpdates', 'Check for a new version when Stackline starts', 'Asks GitHub for the list of releases. Nothing is downloaded until you choose to update.')}
   </section>
 
   <section class="panel">

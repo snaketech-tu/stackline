@@ -16,7 +16,7 @@ const width = Math.ceil(144 + Number(wordWidth) * scale + 16)
 
 for (const [theme, accent, ink] of [['light', '#0d8a86', '#0a0f13'], ['dark', '#2fd0bd', '#e4ecf1']]) {
   write(`ui/public/brand/stackline-${theme}.svg`, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width} 112" role="img" aria-labelledby="logo-title">
-  <title id="logo-title">swarmdash</title>
+  <title id="logo-title">Stackline</title>
   <g transform="translate(16 16)" color="${accent}">${mark}</g>
   <g transform="translate(144 26) scale(${scale.toFixed(8)})" color="${ink}">${wordmark}</g>
 </svg>
@@ -24,7 +24,7 @@ for (const [theme, accent, ink] of [['light', '#0d8a86', '#0a0f13'], ['dark', '#
 }
 
 const icon = (size) => `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 128 128" role="img" aria-labelledby="icon-title">
-  <title id="icon-title">swarmdash</title>
+  <title id="icon-title">Stackline</title>
   <rect x="4" y="4" width="120" height="120" rx="28" fill="#0d8a86"/>
   <g transform="translate(24 30.666667) scale(0.83333333)" color="#fff">${mark}</g>
 </svg>

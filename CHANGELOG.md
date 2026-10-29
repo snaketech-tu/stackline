@@ -1,7 +1,12 @@
 # Changelog
 
 Release notes for each version. The section of a version becomes the text of
-its GitHub release, and swarmdash shows it in the update dialog.
+its GitHub release, and Stackline shows it in the update dialog.
+
+## Unreleased
+
+### Changed
+- **swarmdash is now called Stackline.** Another project already uses the name swarmdash, and the app is about more than swarms. Updating keeps your connections, pins, settings and stored logs: Stackline moves the swarmdash folders over the first time it starts. The single binary is now called `stackline`, its environment variables start with `STACKLINE_` (the `SWARMDASH_` ones still work), and on Windows the installer removes the old swarmdash entry from the app list
 
 ## 0.4.1
 

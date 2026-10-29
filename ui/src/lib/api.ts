@@ -1,4 +1,4 @@
-// Thin client for the local swarmdash API. The server signs the browser in with
+// Thin client for the local Stackline API. The server signs the browser in with
 // a cookie; during development a `?token=` in the page URL is sent as a header.
 
 import type { DockerEvent, LogResponse } from './types'
@@ -8,11 +8,11 @@ try {
   const u = new URL(location.href)
   const t = u.searchParams.get('token')
   if (t) {
-    sessionStorage.setItem('swarmdash-token', t)
+    sessionStorage.setItem('stackline-token', t)
     u.searchParams.delete('token')
     history.replaceState(null, '', u.toString())
   }
-  devToken = sessionStorage.getItem('swarmdash-token')
+  devToken = sessionStorage.getItem('stackline-token')
 } catch {
   devToken = null
 }
@@ -26,7 +26,7 @@ export class ApiError extends Error {
 /** A raw API response, for downloads. Throws on errors like `api`. */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers)
-  if (devToken) headers.set('x-swarmdash-token', devToken)
+  if (devToken) headers.set('x-stackline-token', devToken)
   if (init.body && !headers.has('content-type')) headers.set('content-type', 'application/json')
   const res = await fetch('/api' + path, { ...init, headers, credentials: 'same-origin' })
   if (!res.ok) {

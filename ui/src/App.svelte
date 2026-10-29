@@ -71,7 +71,7 @@
       <svg width="32" height="27" viewBox="0 0 96 80" aria-hidden="true">
         <use href="/brand/stackline-mark.svg#stackline" />
       </svg>
-      <div>swarmdash<small>Read-only</small></div>
+      <div>Stackline<small>Read-only</small></div>
     </div>
     <nav class="nav">
       {#each views as [v, label] (v)}

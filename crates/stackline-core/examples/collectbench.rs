@@ -1,14 +1,14 @@
 //! Times log polls against the local Docker engine.
 //!
-//!     cargo run --release -p swarmdash-core --example collectbench -- [polls]
+//!     cargo run --release -p stackline-core --example collectbench -- [polls]
 
 use std::sync::Arc;
 use std::time::Instant;
 
-use swarmdash_core::collector::Collector;
-use swarmdash_core::docker::{DockerClient, Endpoint};
-use swarmdash_core::snapshot::{self, Options};
-use swarmdash_core::store::Store;
+use stackline_core::collector::Collector;
+use stackline_core::docker::{DockerClient, Endpoint};
+use stackline_core::snapshot::{self, Options};
+use stackline_core::store::Store;
 
 #[tokio::main]
 async fn main() {
