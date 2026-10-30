@@ -132,6 +132,9 @@ pub struct Service {
     pub tasks: Vec<Task>,
     pub cpu_percent: Option<f64>,
     pub mem_used: Option<u64>,
+    /// What it runs, to tell when it was deployed again. See `deploys`.
+    #[serde(skip)]
+    pub config: crate::deploys::Config,
 }
 
 #[derive(Clone, Debug, Serialize)]

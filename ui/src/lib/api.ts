@@ -1,7 +1,7 @@
 // Thin client for the local Stackline API. The server signs the browser in with
 // a cookie; during development a `?token=` in the page URL is sent as a header.
 
-import type { DockerEvent, LogResponse } from './types'
+import type { Deploy, DockerEvent, LogResponse } from './types'
 
 let devToken: string | null = null
 try {
@@ -75,6 +75,13 @@ export async function fetchEvents(conn: string, p: LogParams): Promise<DockerEve
     `/c/${encodeURIComponent(conn)}/events?${query({ from: Math.floor(from), to: Math.ceil(to), stack, service, q, limit })}`,
   )
   return r.events
+}
+
+/** Deploys of the range, newest first, with the errors that are new since each one. */
+export async function fetchDeploys(conn: string, p: LogParams): Promise<Deploy[]> {
+  const { from, to, stack, service } = p
+  const r = await api<{ deploys: Deploy[] }>(`/c/${encodeURIComponent(conn)}/deploys?${query({ from: Math.floor(from), to: Math.ceil(to), stack, service })}`)
+  return r.deploys
 }
 
 /** Lines already shown keep their objects, so their rows are not drawn again. */

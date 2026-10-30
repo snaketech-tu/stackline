@@ -55,6 +55,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/c/{id}/logs", get(logs))
         .route("/c/{id}/logs/export", get(export))
         .route("/c/{id}/events", get(events))
+        .route("/c/{id}/deploys", get(deploys))
         .route("/c/{id}/errors", get(errors))
         .route("/c/{id}/service", get(service_details))
         .route("/c/{id}/report", get(report))
@@ -296,6 +297,33 @@ async fn events(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> R
     Ok(Json(json!({ "events": events })))
 }
 
+/// Deploys in the time range, newest first, each with the error groups that
+/// first showed up after it (until the service's next deploy).
+async fn deploys(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> Result<Json<Value>, ApiError> {
+    st.manager.runtime(&id).ok_or_else(not_found)?;
+    let f = p.filter();
+    let store = st.manager.store.clone();
+    let now = chrono::Utc::now().timestamp_micros();
+    let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
+        let mut events: Vec<_> =
+            store.events(&id, &f, 5000)?.into_iter().filter(|e| e.kind == stackline_core::events::Kind::Deploy).collect();
+        events.sort_by_key(|e| std::cmp::Reverse(e.ts));
+        events.truncate(50);
+        let mut next: std::collections::HashMap<String, i64> = Default::default();
+        let mut out = Vec::new();
+        for e in events {
+            let until = next.get(&e.service).copied().unwrap_or(now + 1);
+            let new_errors = store.new_since(&id, &e.service, e.ts, until)?;
+            next.insert(e.service.clone(), e.ts);
+            out.push(json!({ "event": e, "until": until, "newErrors": new_errors }));
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!(e))??;
+    Ok(Json(json!({ "deploys": out })))
+}
+
 async fn errors(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
     let store = st.manager.store.clone();
@@ -343,7 +371,7 @@ async fn report(st: St, Path(id): Path<String>, Query(p): Query<ServiceParams>) 
     let now = chrono::Utc::now().timestamp_micros();
     let day = LogFilter { from: now - 86_400_000_000, to: now + 1, exact_services: vec![p.name.clone()], ..Default::default() };
     let (store, conn) = (st.manager.store.clone(), id.clone());
-    let (logs, problems, events, summary, before) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+    let (logs, problems, events, summary, before, fresh) = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let logs = store.query(&conn, &day, 1, 0)?;
         let problems = store.query(&conn, &LogFilter { levels: vec![Level::Error, Level::Warn], ..day.clone() }, 1, 0)?;
         let mut events = store.events(&conn, &day, 500)?;
@@ -360,7 +388,11 @@ async fn report(st: St, Path(id): Path<String>, Query(p): Query<ServiceParams>) 
             }
             None => vec![],
         };
-        Ok((logs, problems, events, summary, before))
+        let fresh = match events.iter().rev().find(|e| e.kind == Kind::Deploy) {
+            Some(d) => store.new_since(&conn, &d.service, d.ts, now + 1)?,
+            None => vec![],
+        };
+        Ok((logs, problems, events, summary, before, fresh))
     })
     .await
     .map_err(|e| anyhow::anyhow!(e))??;
@@ -377,6 +409,7 @@ async fn report(st: St, Path(id): Path<String>, Query(p): Query<ServiceParams>) 
         events: &events,
         before_crash: &before,
         quiet,
+        new_since_deploy: &fresh,
         now: now / 1000,
         version: env!("CARGO_PKG_VERSION"),
     });

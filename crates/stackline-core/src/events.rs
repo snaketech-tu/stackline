@@ -47,6 +47,8 @@ pub enum Kind {
     Unhealthy,
     /// A swarm task failed or was rejected (from the task history).
     Failed,
+    /// The service runs something else than before; see `deploys`.
+    Deploy,
 }
 
 impl Kind {
@@ -59,11 +61,14 @@ impl Kind {
             Kind::Oom => "oom",
             Kind::Unhealthy => "unhealthy",
             Kind::Failed => "failed",
+            Kind::Deploy => "deploy",
         }
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
-        [Kind::Start, Kind::Exit, Kind::Stop, Kind::Crash, Kind::Oom, Kind::Unhealthy, Kind::Failed].into_iter().find(|k| k.as_str() == s)
+        [Kind::Start, Kind::Exit, Kind::Stop, Kind::Crash, Kind::Oom, Kind::Unhealthy, Kind::Failed, Kind::Deploy]
+            .into_iter()
+            .find(|k| k.as_str() == s)
     }
 }
 
