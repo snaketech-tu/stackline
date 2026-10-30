@@ -3,7 +3,9 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
-## Unreleased
+## 0.5.0
+
+swarmdash is now Stackline. New: a debug report per service, a warning when a service goes quiet, Podman hosts, more log formats, and deploys on the time graphs with the errors that started after them.
 
 ### Added
 - **Debug report.** A service's panel has a **Debug report** button that copies a Markdown report for a ticket or a chat: image and configuration, replicas, log counts of the last 24 hours, the most frequent errors with a sample, stops and crashes, and the lines printed just before the last crash. Environment values are left out, since they often hold secrets

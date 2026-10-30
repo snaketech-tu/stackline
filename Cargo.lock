@@ -3971,7 +3971,7 @@ checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
 name = "stackline"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -3999,7 +3999,7 @@ dependencies = [
 
 [[package]]
 name = "stackline-core"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -4020,7 +4020,7 @@ dependencies = [
 
 [[package]]
 name = "stackline-desktop"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "serde_json",
