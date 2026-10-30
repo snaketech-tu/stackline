@@ -3,10 +3,10 @@
 
 import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
-import { ApiError, api, post, put, type LogParams } from './api'
+import { ApiError, api, fetchDeploys, post, put, type LogParams } from './api'
 import { beforeEvent } from './events'
 import type {
-  Alert, AlertsResponse, Collect, ConnState, Connection, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  Alert, AlertsResponse, Collect, ConnState, Connection, Deploy, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
 } from './types'
 
@@ -247,6 +247,10 @@ class AppState {
   /** Which services of the active connection have their logs collected. */
   collect = $state<Collect>({ only: false, services: [] })
   errors = $state.raw<ErrorSummary | null>(null)
+  /** Deploys of the last 24 hours, newest first, with the errors new since each. */
+  deploys = $state.raw<Deploy[]>([])
+  /** Error groups that first showed up after a deploy, by fingerprint. */
+  newSinceDeploy = $derived(new Map(this.deploys.flatMap((d) => d.newErrors.map((g) => [g.fp, d] as const))))
   settings = $state<Settings | null>(null)
   update = $state<UpdateState | null>(null)
   view = $state<View>('overview')
@@ -404,6 +408,12 @@ class AppState {
     this.logs.zoom(now - a.windowMins * 60e3, now)
   }
 
+  /** What a service logged from just before a deploy to 10 minutes after it. */
+  showDeploy(e: DockerEvent) {
+    this.showLogs([e.service])
+    this.logs.zoom(e.ts / 1000 - 60e3, Math.min(Date.now(), e.ts / 1000 + 10 * 60e3))
+  }
+
   /**
    * The lines a replica printed in the 2 minutes before it stopped or
    * crashed: usually where the reason is.
@@ -485,9 +495,11 @@ class AppState {
     const seq = ++this.#seq
     const id = this.activeId
     try {
-      const [res, errors] = await Promise.all([
+      const now = Date.now()
+      const [res, errors, deploys] = await Promise.all([
         api<SnapshotResponse>(`/c/${encodeURIComponent(id)}/snapshot`),
         api<ErrorSummary>(`/c/${encodeURIComponent(id)}/errors`).catch(() => null),
+        fetchDeploys(id, { from: now - 24 * 3600e3, to: now + 60e3 }).catch(() => null),
       ])
       if (seq !== this.#seq) return
       this.conn = res.state
@@ -495,6 +507,7 @@ class AppState {
       this.pins = res.pins
       if (!this.#collectBusy) this.collect = res.collect ?? { only: false, services: [] }
       if (errors) this.errors = errors
+      if (deploys) this.deploys = deploys
       this.fatal = null
     } catch (e) {
       if (seq !== this.#seq) return

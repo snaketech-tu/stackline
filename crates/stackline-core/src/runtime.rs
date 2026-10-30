@@ -268,6 +268,18 @@ impl Manager {
         Some(rt)
     }
 
+    /// Starts every saved connection when the setting asks for it, so their
+    /// logs are collected even before anyone opens them. Logs that were never
+    /// read are often the ones needed after a crash.
+    pub fn open_all(self: &Arc<Self>) {
+        let cfg = self.config();
+        if cfg.settings.collect_at_start {
+            for c in &cfg.connections {
+                self.runtime(&c.id);
+            }
+        }
+    }
+
     pub fn stop(&self, id: &str) {
         if let Some(rt) = self.runtimes.lock().unwrap().remove(id) {
             for t in rt.tasks.lock().unwrap().drain(..) {
@@ -307,6 +319,7 @@ impl Manager {
             let mut collector = Collector::new(&r.cfg.id, m.store.clone());
             let mut events = EventPoller::new(&r.cfg.id, m.store.clone());
             let mut bound: Option<String> = None;
+            let mut deploys_at = 0;
             loop {
                 let settings = m.config().settings;
                 let snap = r.snapshot();
@@ -330,6 +343,15 @@ impl Manager {
                         }
                     }
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
+                    // Deploys: once per new snapshot.
+                    if snap.fetched_at != deploys_at {
+                        deploys_at = snap.fetched_at;
+                        let (store, conn, snap2) = (m.store.clone(), r.cfg.id.clone(), snap.clone());
+                        let from = chrono::Utc::now().timestamp_micros() - retention;
+                        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || crate::deploys::record(&store, &conn, &snap2, from)).await {
+                            tracing::warn!("could not record the deploys of {}: {e:#}", r.cfg.name);
+                        }
+                    }
                     let collect = m.config().collect.remove(&r.cfg.id).unwrap_or_default();
                     let sources = snap.log_sources().into_iter().filter(|s| collect.wants(&s.service)).collect();
                     let mut report = collector.poll(&client, sources, retention).await;
@@ -482,7 +504,12 @@ pub async fn test_connection(cfg: &ConnectionConfig) -> Vec<TestStep> {
     let t = Instant::now();
     match client.get_json::<serde_json::Value>("/version").await {
         Ok(v) => steps.push(TestStep {
-            label: format!("Docker {} (API {})", v["Version"].as_str().unwrap_or("?"), v["ApiVersion"].as_str().unwrap_or("?")),
+            label: format!(
+                "{} {} (API {})",
+                snapshot::engine_name(&v),
+                v["Version"].as_str().unwrap_or("?"),
+                v["ApiVersion"].as_str().unwrap_or("?")
+            ),
             ok: true,
             detail: None,
             ms: t.elapsed().as_millis() as u64,
@@ -522,4 +549,37 @@ pub async fn test_connection(cfg: &ConnectionConfig) -> Vec<TestStep> {
         }),
     }
     steps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn every_saved_connection_collects_from_the_start_unless_switched_off() {
+        let dir = std::env::temp_dir().join(format!("stackline-open-all-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let paths = Paths::in_dir(&dir);
+        let mut cfg = AppConfig::default();
+        // Nothing listens there; the connections only have to start.
+        let local = |id: &str| ConnectionConfig {
+            id: id.into(),
+            name: id.into(),
+            kind: ConnectionKind::Local { endpoint: Some("tcp://127.0.0.1:9".into()) },
+        };
+        cfg.connections = vec![local("a"), local("b")];
+        cfg.settings.collect_at_start = false;
+        cfg.save(&paths.config).unwrap();
+        let m = Manager::new(paths).unwrap();
+        m.open_all();
+        assert!(m.runtimes.lock().unwrap().is_empty());
+
+        m.update_config(|c| c.settings.collect_at_start = true).unwrap();
+        m.open_all();
+        let mut open: Vec<String> = m.runtimes.lock().unwrap().keys().cloned().collect();
+        open.sort();
+        assert_eq!(open, ["a", "b"]);
+        m.shutdown();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

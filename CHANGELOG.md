@@ -5,6 +5,15 @@ its GitHub release, and Stackline shows it in the update dialog.
 
 ## Unreleased
 
+### Added
+- **Debug report.** A service's panel has a **Debug report** button that copies a Markdown report for a ticket or a chat: image and configuration, replicas, log counts of the last 24 hours, the most frequent errors with a sample, stops and crashes, and the lines printed just before the last crash. Environment values are left out, since they often hold secrets
+- **Went quiet.** The Overview says when a running service that logged in most minutes of the last two hours has printed nothing for 10 minutes. A process that hangs often looks exactly like that
+- **Podman.** Stackline reads Podman hosts like Docker ones, locally or over SSH, with or without root. The connection form offers the Podman socket paths, and **This computer** finds Podman's socket when there is no Docker
+- **More log formats.** Go and Rust panics with their goroutines or backtrace are one entry, PHP errors with their stack trace and Ruby exceptions with their `from` lines too. The levels of Redis, MongoDB (old text and the JSON logs of 4.4 and later), Traefik's console logs, PHP-FPM and Rails loggers are recognised, Traefik's JSON access logs read as `POST /api/cart 502 3ms (router)`, and an access log line with a 5xx status (nginx, Apache, Traefik, Caddy) counts as an error
+- **Deploys on the time graphs.** Stackline notices when a service is deployed (a new swarm service update, or new containers of a Compose service) and says what changed: the image, replicas, ports, mounts, limits, or which environment variables changed (never their values). Deploys are marked on the time graphs, listed with stops and crashes in the service panel with the lines logged right after, and part of the debug report
+- **New since deploy.** Errors that only started after a deploy are marked as such in Logs and in the service panel, and the Overview lists them with the deploy that likely caused them. This needs at least 30 minutes of stored logs before the deploy, so errors that were simply never seen before are not blamed on it
+- **Collect every connection from the start.** Stackline now connects to all saved connections when it starts and collects their logs, so they are stored when something breaks on a host you did not have open. Switch it off in Preferences to collect only the connections you open
+
 ### Changed
 - **swarmdash is now called Stackline.** Another project already uses the name swarmdash, and the app is about more than swarms. Updating keeps your connections, pins, settings and stored logs: Stackline moves the swarmdash folders over the first time it starts. The single binary is now called `stackline`, its environment variables start with `STACKLINE_` (the `SWARMDASH_` ones still work), and on Windows the installer removes the old swarmdash entry from the app list
 

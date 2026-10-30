@@ -147,7 +147,7 @@
       </span>
       <span class="d">
         Counts the errors each connection logged and sends one notification when the count reaches the threshold, then waits until it drops again.
-        Covers every connection you opened since Stackline started, and only reads the logs stored on this computer.
+        Covers every connection whose logs are collected, and only reads the logs stored on this computer.
         {#if !native}
           {#if permission === 'denied'}<b style="color:var(--err)">This browser blocks notifications for Stackline. Allow them in the site settings; until then alerts only show inside the page.</b>
           {:else if permission === 'unsupported'}This browser cannot show notifications, so alerts show inside the page.
@@ -174,12 +174,13 @@
 
   <section class="panel">
     <div class="ph"><h2>Log collection</h2><span class="pill ok" style="font-size:11.5px">read-only</span></div>
+    {@render toggle('collectAtStart', 'Collect every connection from the start', 'Connects to all saved connections when Stackline starts and keeps their logs, so they are there when something breaks on a host you have not opened. Off: only connections you open are collected.')}
     {@render select('retentionDays', 'Keep logs for', 'Older lines are deleted from this computer. The server is never touched.', opts([1, 2, 3, 7, 14, 30, 90], s.retentionDays), (d) => (d === 1 ? '1 day' : `${d} days`))}
     {@render select('maxStoreMb', 'Max local storage', 'When the store is full, the oldest lines go first.', opts([512, 1024, 2048, 5120, 10240, 20480], s.maxStoreMb), (mb) => (mb >= 1024 ? mb / 1024 + ' GB' : mb + ' MB'))}
     {@render select('logPollSecs', 'Fetch new log lines every', 'After the first load Stackline only asks for lines newer than the last one it saw, per replica.', opts([2, 3, 5, 15, 60], s.logPollSecs), (v) => `${v} s`)}
     {@render select('refreshSecs', 'Refresh containers and services every', '', opts([5, 10, 30, 60], s.refreshSecs), (v) => `${v} s`)}
     {@render toggle('collectStats', 'Read CPU and memory per container', 'One extra read-only stats call per container on every refresh.')}
-    <div class="pb hint" style="border-top:1px solid var(--line)">Logs are read separately for every replica, so a multi-line stack trace from one replica never gets mixed with another. Multi-line entries from Java, .NET, Python, Node.js, PostgreSQL and MariaDB are joined automatically, and JSON logs (ECS, Logstash, Serilog, pino, zap and similar) are read field by field.</div>
+    <div class="pb hint" style="border-top:1px solid var(--line)">Logs are read separately for every replica, so a multi-line stack trace from one replica never gets mixed with another. Multi-line entries from Java, .NET, Python, Node.js, Go, Rust, PHP, Ruby, PostgreSQL and MariaDB are joined automatically, levels of Redis, MongoDB and access logs (nginx, Traefik, Caddy: a 5xx status is an error) are recognised, and JSON logs (ECS, Logstash, Serilog, pino, zap, MongoDB and similar) are read field by field.</div>
   </section>
 
   <section class="panel">
@@ -263,7 +264,7 @@
   </div>
 {/snippet}
 
-{#snippet toggle(key: 'collectStats' | 'checkUpdates', label: string, desc: string)}
+{#snippet toggle(key: 'collectStats' | 'checkUpdates' | 'collectAtStart', label: string, desc: string)}
   <div class="set">
     <label class="l" for="pref-{key}">{label}</label>
     <span class="c">

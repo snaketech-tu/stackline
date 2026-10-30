@@ -71,6 +71,7 @@ pub async fn start(opts: ServeOptions) -> Result<Server> {
     if !addr.ip().is_loopback() {
         allowed_hosts.push(addr.to_string());
     }
+    manager.open_all();
     let updater = Updater::new(opts.installer);
     updater.spawn_checks(manager.clone());
     let state = Arc::new(AppState {

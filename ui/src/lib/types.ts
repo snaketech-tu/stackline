@@ -3,7 +3,7 @@
 export type Level = 'ERROR' | 'WARN' | 'INFO' | 'DEBUG'
 
 export interface Host {
-  id: string; clusterId: string | null; name: string; os: string; kernel: string; dockerVersion: string; apiVersion: string
+  id: string; clusterId: string | null; name: string; os: string; kernel: string; engine: string; dockerVersion: string; apiVersion: string
   ncpu: number; memTotal: number; containersRunning: number; containersTotal: number; images: number
   swarmState: string; isManager: boolean; cpuPercent: number | null; memUsed: number | null
 }
@@ -46,7 +46,7 @@ export type Connection =
 
 export interface Settings {
   theme: 'system' | 'light' | 'dark'; retentionDays: number; maxStoreMb: number
-  refreshSecs: number; logPollSecs: number; collectStats: boolean; checkUpdates: boolean
+  refreshSecs: number; logPollSecs: number; collectStats: boolean; checkUpdates: boolean; collectAtStart: boolean
   alertEnabled: boolean; alertWindowMins: number; alertThreshold: number
 }
 
@@ -78,10 +78,12 @@ export interface ServiceUsage { service: string; entries: number; textBytes: num
 /** Stored lines per service, and the services whose lines are being deleted. */
 export interface Usage { services: ServiceUsage[]; deleting: string[] }
 export interface NewGroup { fp: string; pattern: string; count: number; service: string; first: number; sample: string }
+/** A service that logged steadily and then stopped logging. `since` is µs. */
+export interface Quiet { service: string; since: number; busyMinutes: number }
 export interface ErrorSummary {
   byService: Record<string, number>; lastHour: number; prevHour: number; spark: number[]
   /** Oldest stored entry of the connection, µs. */
-  oldest: number | null; newGroups: NewGroup[]
+  oldest: number | null; newGroups: NewGroup[]; quiet: Quiet[]
 }
 
 export type UpdatePhase = 'idle' | 'checking' | 'upToDate' | 'available' | 'downloading' | 'installing' | 'restarting' | 'failed'
@@ -114,9 +116,12 @@ export interface AlertsResponse { alerts: Alert[]; native: boolean }
 
 /** A service together with the stack it belongs to. */
 export interface ServiceRef extends Service { kind: Stack['kind']; key: string }
-export type EventKind = 'start' | 'exit' | 'stop' | 'crash' | 'oom' | 'unhealthy' | 'failed'
+export type EventKind = 'start' | 'exit' | 'stop' | 'crash' | 'oom' | 'unhealthy' | 'failed' | 'deploy'
 /** A container start, stop or crash. `ts` in Unix microseconds, like log entries. */
 export interface DockerEvent {
   ts: number; stack: string; service: string; replica: string; node: string; source: string
   kind: EventKind; exitCode: number | null; detail: string | null
 }
+
+/** A deploy and the error groups that first showed up after it, until the service's next deploy (`until`, µs). */
+export interface Deploy { event: DockerEvent; until: number; newErrors: NewGroup[] }

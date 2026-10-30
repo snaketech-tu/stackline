@@ -22,6 +22,7 @@ pub enum Endpoint {
 impl Endpoint {
     /// The Docker endpoint of this computer: `DOCKER_HOST` if set, otherwise the
     /// platform default (named pipe on Windows, the first existing socket elsewhere).
+    /// Podman's sockets come after Docker's, so a computer with only Podman works too.
     pub fn local_default() -> Endpoint {
         if let Ok(host) = std::env::var("DOCKER_HOST")
             && let Some(e) = Endpoint::parse(&host)
@@ -30,7 +31,10 @@ impl Endpoint {
         }
         #[cfg(windows)]
         {
-            Endpoint::NamedPipe(r"\\.\pipe\docker_engine".to_string())
+            let docker = r"\\.\pipe\docker_engine";
+            let podman = r"\\.\pipe\podman-machine-default";
+            let pick = if !std::path::Path::new(docker).exists() && std::path::Path::new(podman).exists() { podman } else { docker };
+            Endpoint::NamedPipe(pick.to_string())
         }
         #[cfg(not(windows))]
         {
@@ -41,7 +45,18 @@ impl Endpoint {
                 candidates.push(home.join(".orbstack/run/docker.sock"));
             }
             if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR") {
-                candidates.push(PathBuf::from(rt).join("docker.sock"));
+                candidates.push(PathBuf::from(&rt).join("docker.sock"));
+                // Podman without root: `systemctl --user enable --now podman.socket`.
+                candidates.push(PathBuf::from(rt).join("podman/podman.sock"));
+            }
+            // Podman as root: `systemctl enable --now podman.socket`.
+            candidates.push(PathBuf::from("/run/podman/podman.sock"));
+            // Podman machine on macOS.
+            if let Some(home) = dirs::home_dir() {
+                candidates.push(home.join(".local/share/containers/podman/machine/podman.sock"));
+            }
+            if let Ok(tmp) = std::env::var("TMPDIR") {
+                candidates.push(PathBuf::from(tmp).join("podman/podman-machine-default-api.sock"));
             }
             let found = candidates.iter().find(|p| p.exists()).cloned();
             Endpoint::Unix(found.unwrap_or_else(|| candidates[0].clone()))

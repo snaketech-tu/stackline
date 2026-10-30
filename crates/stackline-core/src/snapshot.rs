@@ -36,6 +36,13 @@ pub type CpuSamples = HashMap<String, CpuSample>;
 /// CPU percent (unknown until there are two samples) and memory bytes.
 type Usage = (Option<f64>, u64);
 
+/// Podman answers the Docker API too; its version lists a "Podman Engine" component.
+pub fn engine_name(version: &Value) -> String {
+    let podman = version["Components"].as_array().is_some_and(|c| c.iter().any(|c| s(&c["Name"]).starts_with("Podman")))
+        || s(&version["Platform"]["Name"]).contains("Podman");
+    if podman { "Podman" } else { "Docker" }.into()
+}
+
 pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot> {
     let info: Value = client.get_json("/info").await?;
     let version: Value = client.get_json("/version").await.unwrap_or(Value::Null);
@@ -54,6 +61,7 @@ pub async fn fetch(client: &DockerClient, opts: &Options<'_>) -> Result<Snapshot
         name: s(&info["Name"]),
         os: s(&info["OperatingSystem"]),
         kernel: s(&info["KernelVersion"]),
+        engine: engine_name(&version),
         docker_version: s(&info["ServerVersion"]),
         api_version: s(&version["ApiVersion"]),
         ncpu: u(&info["NCPU"]) as u32,
@@ -270,6 +278,7 @@ fn map_swarm(services: &[Value], tasks: &[Value], hostnames: &HashMap<String, St
             tasks: svc_tasks,
             cpu_percent: None,
             mem_used: None,
+            config: swarm_config(spec),
         });
     }
     by_stack
@@ -407,7 +416,69 @@ fn container_service(stack: &str, name: &str, full: &str, mode: &str, cs: &[&Val
         tasks,
         cpu_percent: None,
         mem_used: None,
+        config: container_config(cs),
     }
+}
+
+/// What a swarm service runs, from its spec. See `deploys`.
+fn swarm_config(spec: &Value) -> crate::deploys::Config {
+    let mut c = crate::deploys::Config::new();
+    let t = &spec["TaskTemplate"];
+    let cs = &t["ContainerSpec"];
+    let mut put = |k: &str, v: String| {
+        if !v.is_empty() && v != "null" {
+            c.insert(k.to_string(), v);
+        }
+    };
+    put("image", strip_digest(&s(&cs["Image"])));
+    put("image id", s(&cs["Image"]).split_once('@').map(|(_, d)| d.to_string()).unwrap_or_default());
+    put("command", cs["Command"].to_string());
+    put("args", cs["Args"].to_string());
+    put("replicas", spec["Mode"]["Replicated"]["Replicas"].as_u64().map(|n| n.to_string()).unwrap_or_default());
+    put("ports", spec["EndpointSpec"]["Ports"].to_string());
+    put("mounts", cs["Mounts"].to_string());
+    put("limits", t["Resources"].to_string());
+    put("placement", t["Placement"]["Constraints"].to_string());
+    put("secrets", names(&cs["Secrets"], "SecretName"));
+    put("configs", names(&cs["Configs"], "ConfigName"));
+    put("networks", t["Networks"].to_string());
+    put("healthcheck", cs["Healthcheck"].to_string());
+    put("forced", t["ForceUpdate"].as_u64().filter(|n| *n > 0).map(|n| n.to_string()).unwrap_or_default());
+    for e in cs["Env"].as_array().into_iter().flatten().filter_map(Value::as_str) {
+        let (k, v) = e.split_once('=').unwrap_or((e, ""));
+        put(&format!("env:{k}"), crate::deploys::hash(v));
+    }
+    c
+}
+
+/// What the containers of a Compose service or a single container run. The
+/// container list has no environment, but Compose's config hash covers it.
+fn container_config(cs: &[&Value]) -> crate::deploys::Config {
+    let mut c = crate::deploys::Config::new();
+    let Some(first) = cs.iter().max_by_key(|c| c["Created"].as_i64()) else { return c };
+    let mut put = |k: &str, v: String| {
+        if !v.is_empty() {
+            c.insert(k.to_string(), v);
+        }
+    };
+    put("image", strip_digest(&s(&first["Image"])));
+    put("image id", s(&first["ImageID"]));
+    put("command", s(&first["Command"]));
+    put("compose config", s(&first["Labels"]["com.docker.compose.config-hash"]));
+    // By number: while Compose recreates a container, the old and the new one both exist.
+    let numbers: std::collections::BTreeSet<&str> = cs
+        .iter()
+        .filter(|c| c["Labels"][COMPOSE_ONEOFF].as_str() != Some("True"))
+        .map(|c| c["Labels"][COMPOSE_NUMBER].as_str().unwrap_or("1"))
+        .collect();
+    put("replicas", numbers.len().to_string());
+    c
+}
+
+fn names(v: &Value, key: &str) -> String {
+    let mut n: Vec<String> = v.as_array().into_iter().flatten().map(|x| s(&x[key])).collect();
+    n.sort();
+    n.join(", ")
 }
 
 /// Exit code 137 is SIGKILL: `docker stop` after its timeout, or the kernel
@@ -608,6 +679,17 @@ fn natural(s: &str) -> (u64, String) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn tells_podman_from_docker() {
+        let podman =
+            json!({ "Platform": { "Name": "linux/amd64/fedora-40" }, "Components": [{ "Name": "Podman Engine", "Version": "5.2.3" }] });
+        let docker =
+            json!({ "Platform": { "Name": "Docker Engine - Community" }, "Components": [{ "Name": "Engine", "Version": "27.3.1" }] });
+        assert_eq!(engine_name(&podman), "Podman");
+        assert_eq!(engine_name(&docker), "Docker");
+        assert_eq!(engine_name(&Value::Null), "Docker");
+    }
 
     #[test]
     fn groups_compose_containers_into_stacks() {

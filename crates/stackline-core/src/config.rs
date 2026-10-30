@@ -74,6 +74,9 @@ pub struct Settings {
     pub collect_stats: bool,
     /// Look for a newer release on startup.
     pub check_updates: bool,
+    /// Connect to every saved connection when the app starts and collect its
+    /// logs, instead of only the ones opened in the UI.
+    pub collect_at_start: bool,
     /// Send a notification when a connection logs too many errors.
     pub alert_enabled: bool,
     /// The window the errors are counted in, 5 to 15 minutes.
@@ -94,6 +97,7 @@ impl Default for Settings {
             log_poll_secs: 3,
             collect_stats: true,
             check_updates: true,
+            collect_at_start: true,
             alert_enabled: false,
             alert_window_mins: 10,
             alert_threshold: 20,

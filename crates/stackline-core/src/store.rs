@@ -140,6 +140,8 @@ CREATE TABLE IF NOT EXISTS events (
     UNIQUE (conn, key)
 );
 CREATE INDEX IF NOT EXISTS events_conn_ts ON events (conn, ts);
+-- What each service ran at its last deploy; see deploys.rs.
+CREATE TABLE IF NOT EXISTS deploy_state (conn TEXT NOT NULL, service TEXT NOT NULL, ts INTEGER NOT NULL, config TEXT NOT NULL, PRIMARY KEY (conn, service));
 "#;
 
 /// Filters shared by queries and exports. Times are Unix microseconds.
@@ -414,6 +416,21 @@ pub struct ErrorSummary {
     pub oldest: Option<i64>,
     /// Error groups seen for the first time in the last 15 minutes.
     pub new_groups: Vec<NewGroup>,
+    /// Services that logged steadily and then stopped logging.
+    pub quiet: Vec<Quiet>,
+}
+
+/// A service that wrote lines in most minutes of the two hours before and
+/// nothing in the last ten: often a process that hangs while its container
+/// still runs.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Quiet {
+    pub service: String,
+    /// The end of the last minute with a line, µs.
+    pub since: i64,
+    /// Minutes with lines in the two hours before it went quiet, of 120.
+    pub busy_minutes: u32,
 }
 
 /// An error group that did not exist before the last 15 minutes.
@@ -604,6 +621,59 @@ impl Store {
         Ok(())
     }
 
+    /// What each service of a connection ran at its last deploy: time (µs) and config JSON.
+    pub fn deploy_state(&self, conn: &str) -> Result<HashMap<String, (i64, String)>> {
+        self.read(|db| {
+            let mut st = db.prepare_cached("SELECT service, ts, config FROM deploy_state WHERE conn = ?1")?;
+            let rows = st.query_map(params![conn], |r| Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?))))?;
+            Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
+        })
+    }
+
+    pub fn set_deploy_state(&self, conn: &str, service: &str, ts: i64, config: &str) -> Result<()> {
+        self.db.lock().unwrap().execute(
+            "INSERT INTO deploy_state (conn, service, ts, config) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (conn, service) DO UPDATE SET ts = excluded.ts, config = excluded.config",
+            params![conn, service, ts, config],
+        )?;
+        Ok(())
+    }
+
+    /// Error groups of a service that first showed up in `[from, to)`, after a
+    /// deploy at `from`: none of their lines is older. Needs lines of the
+    /// connection from at least 30 minutes before, or everything would be new.
+    pub fn new_since(&self, conn: &str, service: &str, from: i64, to: i64) -> Result<Vec<NewGroup>> {
+        self.read(|db| {
+            let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
+            if oldest.is_none_or(|o| o > from - 1_800_000_000) {
+                return Ok(Vec::new());
+            }
+            let mut st = db.prepare_cached(
+                "SELECT fp, COUNT(*), MIN(ts), MAX(id) FROM entries
+                 WHERE conn = ?1 AND ts >= ?2 AND ts < ?3 AND level = ?4 AND fp IS NOT NULL AND service = ?5 GROUP BY fp",
+            )?;
+            let found = st
+                .query_map(params![conn, from, to, Level::Error.as_i64(), service], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut before = db.prepare_cached("SELECT 1 FROM entries WHERE conn = ?1 AND fp = ?2 AND ts < ?3 LIMIT 1")?;
+            let mut pat = db.prepare_cached("SELECT pattern FROM patterns WHERE conn = ?1 AND fp = ?2")?;
+            let mut text = db.prepare_cached("SELECT text FROM entries WHERE id = ?1")?;
+            let mut out = Vec::new();
+            for (fp, count, first, last_id) in found {
+                if before.exists(params![conn, fp, from])? {
+                    continue;
+                }
+                let pattern = pat.query_row(params![conn, fp], |r| r.get(0)).optional()?.unwrap_or_default();
+                let sample = text.query_row(params![last_id], |r| r.get(0)).optional()?.unwrap_or_default();
+                out.push(NewGroup { fp, pattern, count, service: service.to_string(), first, sample });
+            }
+            out.sort_by_key(|g| std::cmp::Reverse(g.count));
+            Ok(out)
+        })
+    }
+
     /// Stores events read from Docker; ones already stored are skipped.
     /// Returns how many were new.
     pub fn insert_events(&self, conn: &str, events: &[Event]) -> Result<usize> {
@@ -673,7 +743,12 @@ impl Store {
     }
 
     pub fn error_summary(&self, conn: &str, now: i64) -> Result<ErrorSummary> {
-        self.read(|db| error_summary(db, conn, now))
+        let since = self.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
+        self.read(|db| {
+            let mut s = error_summary(db, conn, now)?;
+            s.quiet = quiet(db, conn, now, since)?;
+            Ok(s)
+        })
     }
 
     /// Writes every matching entry, oldest first. Returns the number written.
@@ -938,9 +1013,10 @@ impl Store {
                 db.execute("DELETE FROM cursors WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM hosts WHERE conn = ?1", params![c])?;
                 db.execute("DELETE FROM events WHERE conn = ?1", params![c])?;
+                db.execute("DELETE FROM deploy_state WHERE conn = ?1", params![c])?;
             }
             None => {
-                db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts; DELETE FROM events;")?
+                db.execute_batch("DELETE FROM minutes; DELETE FROM patterns; DELETE FROM cursors; DELETE FROM hosts; DELETE FROM events; DELETE FROM deploy_state;")?
             }
         }
         drop(db);
@@ -1189,7 +1265,31 @@ fn error_summary(db: &Connection, conn: &str, now: i64) -> Result<ErrorSummary> 
     }
     let oldest: Option<i64> = db.query_row("SELECT MIN(ts) FROM entries WHERE conn = ?1", params![conn], |r| r.get(0))?;
     let new_groups = new_groups(db, conn, now, oldest)?;
-    Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups })
+    Ok(ErrorSummary { by_service, last_hour, prev_hour, spark, oldest, new_groups, quiet: Vec::new() })
+}
+
+/// Services that went quiet: lines in at least half the minutes of two hours,
+/// then none for ten minutes. Read from the per-minute counts, so it needs
+/// two hours and ten minutes of counted history.
+fn quiet(db: &Connection, conn: &str, now: i64, minutes_since: i64) -> Result<Vec<Quiet>> {
+    const SILENT: i64 = 10;
+    const BASELINE: i64 = 120;
+    let cut = now.div_euclid(MINUTE) - SILENT;
+    let lo = cut - BASELINE;
+    if minutes_since > lo * MINUTE {
+        return Ok(Vec::new());
+    }
+    let mut st = db.prepare_cached(
+        "SELECT service, SUM(minute < ?3), MAX(minute) FROM minutes
+         WHERE conn = ?1 AND service != '' AND minute >= ?2 AND debug + info + warn + error > 0
+         GROUP BY service HAVING SUM(minute < ?3) >= ?4 AND MAX(minute) < ?3",
+    )?;
+    let rows = st.query_map(params![conn, lo, cut, BASELINE / 2], |r| {
+        Ok(Quiet { service: r.get(0)?, busy_minutes: r.get(1)?, since: (r.get::<_, i64>(2)? + 1) * MINUTE })
+    })?;
+    let mut out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    out.sort_by_key(|q| q.since);
+    Ok(out)
 }
 
 fn export(db: &Connection, conn: &str, f: &LogFilter, format: ExportFormat, out: &mut dyn Write) -> Result<u64> {
@@ -1483,6 +1583,59 @@ mod tests {
         // Less than an hour of history: nothing counts as new yet.
         store.insert("c2", &s1, &entries(&[(now - 10 * min, old), (now - 4 * min, fresh)])).unwrap();
         assert!(store.error_summary("c2", now).unwrap().new_groups.is_empty());
+    }
+
+    #[test]
+    fn errors_new_since_a_deploy() {
+        let store = Store::open_in_memory().unwrap();
+        let min = 60_000_000i64;
+        let deploy = 1_700_000_000_000_000i64;
+        let old = "2026-10-27 ERROR Upstream timed out after 5000ms";
+        let fresh = "2026-10-27 ERROR Column orders.total does not exist";
+        let s1 = src("shop_api", "1");
+        store
+            .insert(
+                "c1",
+                &s1,
+                &entries(&[(deploy - 60 * min, old), (deploy + min, old), (deploy + 2 * min, fresh), (deploy + 3 * min, fresh)]),
+            )
+            .unwrap();
+        store.insert("c1", &src("shop_web", "1"), &entries(&[(deploy + 2 * min, "2026-10-27 ERROR web broke")])).unwrap();
+        let n = store.new_since("c1", "shop_api", deploy, deploy + 10 * min).unwrap();
+        assert_eq!(n.len(), 1, "{n:?}");
+        assert_eq!((n[0].count, n[0].first), (2, deploy + 2 * min));
+        assert!(n[0].sample.contains("orders.total"));
+        // Before the next deploy only.
+        assert!(store.new_since("c1", "shop_api", deploy, deploy + 2 * min).unwrap().is_empty());
+        // Without lines from before the deploy nothing can be called new.
+        assert!(store.new_since("c1", "shop_api", deploy - 50 * min, deploy + 10 * min).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_service_that_stops_logging_goes_quiet() {
+        let store = Store::open_in_memory().unwrap();
+        let min = 60_000_000i64;
+        let now = 1_700_000_000_000_000i64 / min * min + 30_000_000;
+        let lines = |from: i64, to: i64, every: i64| -> Vec<(i64, String)> {
+            (from..to).step_by(every as usize).map(|m| (now - m * min, format!("2026-10-27 INFO tick {m}"))).collect()
+        };
+        let put = |service: &str, l: Vec<(i64, String)>| {
+            let l: Vec<(i64, &str)> = l.iter().map(|(t, s)| (*t, s.as_str())).collect();
+            store.insert("c1", &src(service, "1"), &entries(&l)).unwrap();
+        };
+        // Every minute until 25 minutes ago: quiet.
+        put("shop_hung", lines(25, 180, 1));
+        // Every minute until now: fine.
+        put("shop_busy", lines(0, 180, 1));
+        // Every 5 minutes, last one 14 minutes ago: never logged steadily enough.
+        put("shop_cron", lines(14, 180, 5));
+        let s = store.error_summary("c1", now).unwrap();
+        assert_eq!(s.quiet.len(), 1, "{:?}", s.quiet);
+        assert_eq!(s.quiet[0].service, "shop_hung");
+        assert_eq!(s.quiet[0].since, now - 30_000_000 - 24 * min);
+        assert!(s.quiet[0].busy_minutes >= 100, "{:?}", s.quiet);
+        // An hour earlier it still logged.
+        assert!(store.error_summary("c1", now - 60 * min).unwrap().quiet.is_empty());
     }
 
     #[test]

@@ -23,6 +23,8 @@ export function eventLabel(e: DockerEvent): string {
       return 'health check failed'
     case 'failed':
       return (e.detail ? `failed: ${e.detail}` : 'failed') + code
+    case 'deploy':
+      return e.detail ? `deployed: ${e.detail}` : 'deployed'
   }
 }
 
@@ -30,8 +32,12 @@ export function eventLabel(e: DockerEvent): string {
 export function eventColor(e: DockerEvent): string {
   if (isCrash(e)) return 'var(--err)'
   if (e.kind === 'unhealthy') return 'var(--warn)'
+  if (e.kind === 'deploy') return 'var(--accent)'
   return 'var(--muted)'
 }
+
+/** Who an event happened to: `shop_api #2`, or just the service for a deploy. */
+export const eventWho = (e: DockerEvent) => (e.kind === 'deploy' ? e.service : `${e.service} #${e.replica}`)
 
 /** The 2 minutes before an event and 15 s after it, in milliseconds. */
 export function beforeEvent(e: DockerEvent): [number, number] {

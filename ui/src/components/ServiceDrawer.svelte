@@ -2,7 +2,7 @@
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
   import { app, LEVELS, LINES, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
-  import { api, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
+  import { api, apiFetch, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
   import { eventColor, eventLabel, isCrash } from '../lib/events'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
@@ -39,6 +39,28 @@
     const t = setTimeout(() => (q = v.trim()), 250)
     return () => clearTimeout(t)
   })
+
+  /** Copies a Markdown report of this service: configuration, errors, crashes and the lines before the last one. */
+  let copying = $state(false)
+  async function copyReport() {
+    if (!name || copying) return
+    copying = true
+    const text = apiFetch(`/c/${encodeURIComponent(app.activeId)}/report?${query({ name })}`).then((r) => r.text())
+    try {
+      // Handing the clipboard a promise keeps the click's permission while the report is built (Safari needs that).
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': text.then((t) => new Blob([t], { type: 'text/plain' })) })])
+      } else {
+        await navigator.clipboard.writeText(await text)
+      }
+      app.notify('Debug report copied as Markdown. Paste it into a ticket or a chat.')
+    } catch (e) {
+      const failed = await text.then(() => null, (err) => err)
+      app.notify(failed ? `Could not build the report: ${app.describe(failed)}` : 'The clipboard is not available here.', 'err')
+    } finally {
+      copying = false
+    }
+  }
 
   // The full configuration, read from Docker when the details open and every 30 seconds after.
   let details = $state<ServiceDetails | null>(null)
@@ -86,6 +108,8 @@
   // Starts alone are noise: shown are the ones that say something went wrong or changed.
   let notable = $derived(events.filter((e) => e.kind !== 'start').reverse())
   let crashes = $derived(events.filter(isCrash).length)
+  // The newest deploy of this service in the last 24 hours, with the errors that only started after it.
+  let lastDeploy = $derived(app.deploys.find((d) => d.event.service === name))
   const when = (ts: number) => (app.now - ts / 1000 > 20 * 3600e3 ? dateTime(ts / 1000) : hhmm(ts / 1000))
 
   // Lines: the logs tab, and the newest line for a failing service.
@@ -150,6 +174,7 @@
 
 <Drawer title={s ? s.fullName : key} size={full ? 'full' : 'wide'}>
   {#snippet actions()}
+    <button class="btn sm ghost" title="Copy a debug report of this service as Markdown: configuration, error groups, crashes and the lines before the last one. Environment values are left out." onclick={copyReport} disabled={copying || !s}><Icon name="copy" size={14} /><span class="hide-sm">{copying ? 'Copying…' : 'Debug report'}</span></button>
     <PinButton {key} />
     <button class="ib hide-sm" title={full ? 'Leave some of the page visible' : 'Use the whole window'} aria-label={full ? 'Smaller' : 'Use the whole window'} onclick={toggleFull}><Icon name={full ? 'minimize' : 'maximize'} size={15} /></button>
     <button class="ib" title="Previous service ( [ )" aria-label="Previous service" onclick={() => step(-1)}><Icon name="chevL" size={16} /></button>
@@ -213,18 +238,40 @@
         </button>
       </div>
     {/if}
+    {#if lastDeploy?.newErrors.length}
+      {@const d = lastDeploy}
+      <div>
+        <h4>New since the deploy at {hhmm(d.event.ts / 1000)}</h4>
+        <div class="boxed">
+          {#each d.newErrors.slice(0, 3) as g (g.fp)}
+            <button class="grp" onclick={() => setTab('errors')}>
+              <span class="count">{g.count}</span>
+              <span class="ttl">{g.pattern || firstLine(g.sample)}</span>
+              <span class="meta">first {ago(g.first / 1000, app.now)}</span>
+            </button>
+          {/each}
+        </div>
+        {#if d.newErrors.length > 3}<span class="muted" style="font-size:12px">and {d.newErrors.length - 3} more</span>{/if}
+      </div>
+    {/if}
     {#if notable.length}
       <div>
-        <h4>Stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
+        <h4>Deploys, stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
         <div class="tw boxed">
           <table class="evlist">
             <tbody>
               {#each notable.slice(0, 8) as e (e.ts + e.source + e.kind)}
                 <tr>
                   <td class="mono muted" style="white-space:nowrap" title={dateTime(e.ts / 1000)}>{when(e.ts)}</td>
-                  <td class="mono" style="white-space:nowrap">#{e.replica}</td>
+                  <td class="mono" style="white-space:nowrap">{e.kind === 'deploy' ? '' : `#${e.replica}`}</td>
                   <td style:color={eventColor(e) === 'var(--muted)' ? undefined : eventColor(e)}>{eventLabel(e)}</td>
-                  <td class="actcell"><button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button></td>
+                  <td class="actcell">
+                    {#if e.kind === 'deploy'}
+                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showDeploy(e)} title="What the service logged from a minute before the deploy to 10 minutes after">Lines after</button>
+                    {:else}
+                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button>
+                    {/if}
+                  </td>
                 </tr>
               {/each}
             </tbody>
@@ -390,7 +437,7 @@
           <span class="ettl">{#each patternParts(g.pattern || firstLine(g.sample)) as part, i (i)}{#if part.v}<var>{part.text}</var>{:else}{part.text}{/if}{/each}</span>
           <Spark values={g.spark} warn={g.level === 'WARN'} />
         </div>
-        <span class="muted emeta">{g.exc ? 'exception' : g.level === 'WARN' ? 'warning' : 'log error'} · first {ago(g.first / 1000, app.now)} · last {ago(g.last / 1000, app.now)} · {g.sources} {g.sources === 1 ? 'container' : 'containers'}</span>
+        <span class="muted emeta">{g.exc ? 'exception' : g.level === 'WARN' ? 'warning' : 'log error'} · first {ago(g.first / 1000, app.now)} · last {ago(g.last / 1000, app.now)} · {g.sources} {g.sources === 1 ? 'container' : 'containers'}{#if app.newSinceDeploy.get(g.fp)}{@const d = app.newSinceDeploy.get(g.fp)!}{' · '}<span style="color:var(--accent)">new since the deploy at {hhmm(d.event.ts / 1000)}</span>{/if}</span>
         <pre class="trace" class:plain={g.level !== 'ERROR'}>{#each g.sample.split('\n') as l, i (i)}{#if i === 0}<b>{l}</b>{:else}{'\n'}<span class="fr">{l}</span>{/if}{/each}</pre>
         <div class="eacts">
           <button class="btn sm" onclick={() => { app.showLogs([s!.fullName]); app.logs.group = g.fp }}>Show all {g.count.toLocaleString()} in Logs</button>

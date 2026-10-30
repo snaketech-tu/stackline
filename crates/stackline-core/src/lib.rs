@@ -13,11 +13,13 @@ macro_rules! regex {
 pub mod alerts;
 pub mod collector;
 pub mod config;
+pub mod deploys;
 pub mod details;
 pub mod docker;
 pub mod events;
 pub mod logs;
 pub mod model;
+pub mod report;
 pub mod runtime;
 pub mod snapshot;
 pub mod store;
