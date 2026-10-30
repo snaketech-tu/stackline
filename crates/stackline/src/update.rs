@@ -1,8 +1,8 @@
 //! Update check and install.
 //!
-//! On startup swarmdash asks GitHub for newer releases and the UI offers them
+//! On startup Stackline asks GitHub for newer releases and the UI offers them
 //! with their changelog. Nothing is downloaded until the user clicks update.
-//! The desktop app installs through Tauri's updater; `swarmdash serve`
+//! The desktop app installs through Tauri's updater; `stackline serve`
 //! downloads the binary for its platform and replaces itself. Both check the
 //! download against the release signing key before installing, then restart.
 
@@ -16,12 +16,12 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
-use swarmdash_core::runtime::Manager;
+use stackline_core::runtime::Manager;
 use tokio::sync::Notify;
 
-pub const REPO: &str = "snaketech-tu/swarmdash";
+pub const REPO: &str = "snaketech-tu/stackline";
 const PUBKEY: &str = include_str!("../updater.pub");
-const TARGET: &str = env!("SWARMDASH_TARGET");
+const TARGET: &str = env!("STACKLINE_TARGET");
 const MANUAL: &str = "Download the new version from GitHub and install it over this one.";
 const CHECK_EVERY: Duration = Duration::from_secs(12 * 3600);
 
@@ -92,7 +92,7 @@ enum Installer {
 pub struct Updater {
     state: Mutex<UpdateState>,
     installer: Installer,
-    /// Signalled after `swarmdash serve` replaced itself; `main` then restarts.
+    /// Signalled after `stackline serve` replaced itself; `main` then restarts.
     pub restart: Arc<Notify>,
 }
 
@@ -240,14 +240,14 @@ fn agent() -> ureq::Agent {
     let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
     ureq::Agent::config_builder()
         .tls_config(tls)
-        .user_agent(concat!("swarmdash/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("stackline/", env!("CARGO_PKG_VERSION")))
         .timeout_connect(Some(Duration::from_secs(15)))
         .build()
         .into()
 }
 
 fn releases_api() -> String {
-    std::env::var("SWARMDASH_UPDATE_URL").unwrap_or_else(|_| format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
+    stackline_core::config::env_var("UPDATE_URL").unwrap_or_else(|| format!("https://api.github.com/repos/{REPO}/releases?per_page=30"))
 }
 
 #[derive(Deserialize)]
@@ -297,39 +297,39 @@ fn newer_releases(list: Vec<GhRelease>, current: &semver::Version) -> Vec<Releas
     out.into_iter().map(|(_, r)| r).collect()
 }
 
-/// Why `swarmdash serve` cannot replace itself here, if it cannot.
+/// Why `stackline serve` cannot replace itself here, if it cannot.
 fn self_install_blocker(exe: &Path) -> Option<String> {
     if pubkey().is_none() {
         return Some(format!("This build was made without an update signing key. {MANUAL}"));
     }
     let s = exe.to_string_lossy();
     if s.contains("/Cellar/") || s.contains("/homebrew/") {
-        return Some("swarmdash was installed with Homebrew. Run `brew upgrade swarmdash` to update.".into());
+        return Some("Stackline was installed with Homebrew. Run `brew upgrade stackline` to update.".into());
     }
     if s.contains("/target/debug/") || s.contains("/target/release/") {
         return Some("This is a development build. Pull and rebuild to update.".into());
     }
     let dir = exe.parent()?;
-    let probe = dir.join(".swarmdash-write-test");
+    let probe = dir.join(".stackline-write-test");
     match std::fs::write(&probe, b"") {
         Ok(()) => {
             let _ = std::fs::remove_file(probe);
             None
         }
-        Err(_) => Some(format!("swarmdash cannot write to {}. Update it the way you installed it. {MANUAL}", dir.display())),
+        Err(_) => Some(format!("Stackline cannot write to {}. Update it the way you installed it. {MANUAL}", dir.display())),
     }
 }
 
 fn pubkey() -> Option<String> {
     #[cfg(debug_assertions)]
-    if let Ok(k) = std::env::var("SWARMDASH_UPDATE_PUBKEY") {
+    if let Some(k) = stackline_core::config::env_var("UPDATE_PUBKEY") {
         return Some(k);
     }
     Some(PUBKEY.trim().to_string()).filter(|k| !k.is_empty())
 }
 
 fn asset_name() -> String {
-    format!("swarmdash-{TARGET}{}", std::env::consts::EXE_SUFFIX)
+    format!("stackline-{TARGET}{}", std::env::consts::EXE_SUFFIX)
 }
 
 /// Downloads the release binary for this platform, verifies its signature and
@@ -362,14 +362,14 @@ fn install_self(release: &Release, exe: &Path, progress: Progress) -> Result<()>
 
     verify(&data, &sig_text)?;
 
-    let tmp = exe.with_file_name(format!(".swarmdash-update-{}{}", release.version, std::env::consts::EXE_SUFFIX));
+    let tmp = exe.with_file_name(format!(".stackline-update-{}{}", release.version, std::env::consts::EXE_SUFFIX));
     std::fs::write(&tmp, &data).with_context(|| format!("could not write {}", tmp.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
     }
-    let replaced = self_replace::self_replace(&tmp).context("could not replace the swarmdash executable");
+    let replaced = self_replace::self_replace(&tmp).context("could not replace the Stackline executable");
     let _ = std::fs::remove_file(&tmp);
     replaced
 }
@@ -390,7 +390,7 @@ fn verify(data: &[u8], sig_b64: &str) -> Result<()> {
 /// data folder and sign-in token so open browser tabs reconnect by themselves.
 pub fn restart(exe: &Path, token: &str) -> Result<()> {
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(std::env::args_os().skip(1)).env("SWARMDASH_TOKEN", token).env("SWARMDASH_RESTARTED", "1");
+    cmd.args(std::env::args_os().skip(1)).env("STACKLINE_TOKEN", token).env("STACKLINE_RESTARTED", "1");
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;

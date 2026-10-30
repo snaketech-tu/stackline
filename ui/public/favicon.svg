@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="icon-title">
-  <title id="icon-title">swarmdash</title>
+  <title id="icon-title">Stackline</title>
   <rect x="4" y="4" width="120" height="120" rx="28" fill="#0d8a86"/>
   <g transform="translate(24 30.666667) scale(0.83333333)" color="#fff"><g id="stackline" fill="currentColor">
     <rect x="34" y="1" width="28" height="28" rx="7"/>

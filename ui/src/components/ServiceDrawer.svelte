@@ -29,10 +29,10 @@
   let qInput = $state('')
   let q = $state('')
   /** Covers the whole window instead of most of it. */
-  let full = $state(load('swarmdash-drawer-full') === '1')
+  let full = $state(load('stackline-drawer-full') === '1')
   function toggleFull() {
     full = !full
-    save('swarmdash-drawer-full', full ? '1' : '0')
+    save('stackline-drawer-full', full ? '1' : '0')
   }
   $effect(() => {
     const v = qInput
@@ -177,7 +177,7 @@
   {#if s && tab !== 'overview' && !app.collects(s.fullName)}
     <div class="callout info">
       <div class="h"><Icon name="logs" size={14} />The logs of this service are not collected</div>
-      <span class="muted" style="font-size:12.5px">swarmdash does not read new lines from it. {lines?.result.total ? 'The lines below were stored before.' : ''}</span>
+      <span class="muted" style="font-size:12.5px">Stackline does not read new lines from it. {lines?.result.total ? 'The lines below were stored before.' : ''}</span>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button class="btn sm" onclick={() => app.setCollects([s!.fullName], true)}>Collect from now on</button>
         {#if lines?.result.total}<button class="btn ghost sm" onclick={() => app.clearService(s!.fullName).catch((e) => app.notify(app.describe(e), 'err'))}>Delete stored lines</button>{/if}
@@ -333,7 +333,7 @@
         <details class="adv dsec">
           <summary><Icon name="chev" size={13} />Environment <span class="muted mono">{d.env.length}</span></summary>
           <dl class="kv" style="margin-top:8px">
-            {#each d.env as e (e.name)}<dt class="mono">{e.name}</dt><dd>{#if e.value === null}<span class="hid" title="Looks like a secret, so swarmdash does not show it">hidden</span>{:else}{e.value}{/if}</dd>{/each}
+            {#each d.env as e (e.name)}<dt class="mono">{e.name}</dt><dd>{#if e.value === null}<span class="hid" title="Looks like a secret, so Stackline does not show it">hidden</span>{:else}{e.value}{/if}</dd>{/each}
           </dl>
         </details>
       {/if}

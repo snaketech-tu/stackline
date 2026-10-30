@@ -1,7 +1,7 @@
 import { expect, type Page } from '@playwright/test'
 import { TOKEN } from '../playwright.config'
 
-/** Opens swarmdash signed in, on the page `view`, once the demo stack shows. */
+/** Opens Stackline signed in, on the page `view`, once the demo stack shows. */
 export async function open(page: Page, view = 'overview') {
   await page.goto(`/?token=${TOKEN}#${view}`)
   if (view !== 'prefs' && view !== 'connections') await expect(page.locator('main.view .center-empty')).toHaveCount(0)

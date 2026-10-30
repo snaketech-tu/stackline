@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "swarmdash",
+  "productName": "Stackline",
   "identifier": "tu.snaketech.swarmdash",
   "build": {
     "frontendDist": "../splash"
@@ -17,12 +17,13 @@
     "createUpdaterArtifacts": true,
     "category": "DeveloperTool",
     "shortDescription": "Read-only dashboard for Docker Swarm and Compose stacks",
-    "longDescription": "swarmdash shows nodes, stacks, services and logs of Docker Swarm and Docker Compose hosts, locally or over SSH. It only reads and never changes anything on the server.",
+    "longDescription": "Stackline shows nodes, stacks, services and logs of Docker Swarm and Docker Compose hosts, locally or over SSH. It only reads and never changes anything on the server.",
     "copyright": "SnakeTech",
     "license": "Apache-2.0",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"],
     "windows": {
-      "nsis": { "installMode": "currentUser" }
+      "nsis": { "installMode": "currentUser", "installerHooks": "windows/hooks.nsh" },
+      "wix": { "upgradeCode": "a1e3ec21-f536-5837-8674-fe38ab7d1cd1" }
     },
     "macOS": {
       "minimumSystemVersion": "11.0"
@@ -31,7 +32,7 @@
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDdBNEE4ODQ2NDdBMUMzMTEKUldRUnc2RkhSb2hLZWxabVhIOGZrUTZxQ3dIWDBtYjAzZWgvQUdTR1Z1aE56R1FnUnI4aEpHMjIK",
-      "endpoints": ["https://github.com/snaketech-tu/swarmdash/releases/latest/download/latest.json"],
+      "endpoints": ["https://github.com/snaketech-tu/stackline/releases/latest/download/latest.json"],
       "windows": { "installMode": "passive" }
     }
   }

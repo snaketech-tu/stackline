@@ -16,7 +16,10 @@ use crate::AppState;
 #[folder = "../../ui/dist"]
 struct Assets;
 
-const COOKIE: &str = "swarmdash_token";
+const COOKIE: &str = "stackline_token";
+/// The cookie set by swarmdash, the name before Stackline. A tab that was open
+/// across the update to Stackline still sends it.
+const OLD_COOKIE: &str = "swarmdash_token";
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -30,7 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
     if !st.allowed_hosts.iter().any(|h| h == host) {
-        return (StatusCode::FORBIDDEN, "swarmdash only answers on its own address").into_response();
+        return (StatusCode::FORBIDDEN, "Stackline only answers on its own address").into_response();
     }
     let path = req.uri().path().to_string();
     if let Some(t) = query_param(req.uri(), "token")
@@ -42,20 +45,21 @@ async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Res
         return res;
     }
     if path.starts_with("/api/") && !authorized(req.headers(), &st.token) {
-        return (StatusCode::UNAUTHORIZED, "Open swarmdash with the link printed when it started.").into_response();
+        return (StatusCode::UNAUTHORIZED, "Open Stackline with the link printed when it started.").into_response();
     }
     next.run(req).await
 }
 
 fn authorized(h: &HeaderMap, token: &str) -> bool {
-    if h.get("x-swarmdash-token").and_then(|v| v.to_str().ok()) == Some(token) {
+    if h.get("x-stackline-token").and_then(|v| v.to_str().ok()) == Some(token) {
         return true;
     }
     h.get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
-        .any(|c| c.trim().strip_prefix(&format!("{COOKIE}=")) == Some(token))
+        .filter_map(|c| c.trim().split_once('='))
+        .any(|(k, v)| (k == COOKIE || k == OLD_COOKIE) && v == token)
 }
 
 fn query_param(uri: &Uri, key: &str) -> Option<String> {

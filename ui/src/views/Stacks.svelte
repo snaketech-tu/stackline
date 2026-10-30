@@ -50,7 +50,7 @@
     <input placeholder="Filter by service, image or stack" bind:value={app.stackQ} autocomplete="off" spellcheck="false" />
     {#if app.stackQ}<button class="ib" style="width:22px;height:22px" onclick={() => (app.stackQ = '')} aria-label="Clear filter"><Icon name="x" size={12} /></button>{/if}
   </label>
-  <div class="seg" role="group" aria-label="Collect logs of" title="Which services swarmdash reads and stores logs for">
+  <div class="seg" role="group" aria-label="Collect logs of" title="Which services Stackline reads and stores logs for">
     <button aria-pressed={!app.collect.only} onclick={() => app.setCollectOnly(false)}>Collect all</button>
     <button aria-pressed={app.collect.only} onclick={() => app.setCollectOnly(true)}>Only chosen<span class="n">{collected}</span></button>
   </div>

@@ -1,6 +1,6 @@
 # Stackline branding
 
-Stackline is the selected swarmdash identity: four rounded container blocks and a
+Stackline is the name and identity of the app (formerly swarmdash): four rounded container blocks and a
 short centered dash, paired with a bold lowercase wordmark.
 
 ## Editable masters

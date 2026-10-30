@@ -1537,7 +1537,7 @@ mod tests {
 
     #[test]
     fn the_size_limit_is_kept_and_space_goes_back_to_the_disk() {
-        let dir = std::env::temp_dir().join(format!("swarmdash-retain-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-retain-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("logs.db");
@@ -1573,7 +1573,7 @@ mod tests {
 
     #[test]
     fn deleting_lines_shrinks_the_file() {
-        let dir = std::env::temp_dir().join(format!("swarmdash-shrink-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-shrink-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("logs.db");
@@ -1612,7 +1612,7 @@ mod tests {
         // keeps logging. Retention runs after each round, as the runtime does
         // every minute, and the file on disk (what Preferences shows) must
         // stay under the limit every time.
-        let dir = std::env::temp_dir().join(format!("swarmdash-limit-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-limit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("logs.db")).unwrap();
@@ -1722,9 +1722,9 @@ mod tests {
 
     #[test]
     #[ignore]
-    /// `cargo test --release -p swarmdash-core bench_retain_large -- --ignored --nocapture`
+    /// `cargo test --release -p stackline-core bench_retain_large -- --ignored --nocapture`
     fn bench_retain_large() {
-        let dir = std::env::temp_dir().join("swarmdash-bench-retain");
+        let dir = std::env::temp_dir().join("stackline-bench-retain");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let store = Store::open(&dir.join("logs.db")).unwrap();
@@ -1765,7 +1765,7 @@ mod tests {
     /// as reading every line, also after lines were deleted.
     #[test]
     fn minute_counts_and_service_reads_match_full_reads() {
-        let dir = std::env::temp_dir().join(format!("swarmdash-minutes-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-minutes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = Store::open(&dir.join("logs.db")).unwrap();
         store.upgrade().unwrap();
@@ -1838,7 +1838,7 @@ mod tests {
     /// one, newer lines are counted, and both together give the right answer.
     #[test]
     fn store_from_before_minute_counts() {
-        let dir = std::env::temp_dir().join(format!("swarmdash-upgrade-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-upgrade-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let path = dir.join("logs.db");
         let base = 1_700_000_000_000_000i64 / MINUTE * MINUTE;
@@ -1887,7 +1887,7 @@ mod tests {
     /// A long read (an export) neither blocks new lines nor the cleanup.
     #[test]
     fn long_reads_do_not_hold_up_writes() {
-        let dir = std::env::temp_dir().join(format!("swarmdash-reads-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("stackline-reads-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let store = std::sync::Arc::new(Store::open(&dir.join("logs.db")).unwrap());
         let base = 1_700_000_000_000_000i64;

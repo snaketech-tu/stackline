@@ -5,11 +5,11 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
-    <title>swarmdash</title>
+    <title>Stackline</title>
     <script>
       // Apply the saved theme before the first paint.
       try {
-        const t = localStorage.getItem('swarmdash-theme');
+        const t = localStorage.getItem('stackline-theme') ?? localStorage.getItem('swarmdash-theme');
         if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
       } catch (e) {}
     </script>

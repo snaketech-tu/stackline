@@ -91,7 +91,7 @@ pub async fn fetch(client: &DockerClient, svc: &Service, kind: StackKind) -> Res
     if kind == StackKind::Swarm {
         let spec: Value = client.get_json(&format!("/services/{}", svc.id)).await?;
         let mut d = from_service(&spec);
-        // Only containers on the node swarmdash is connected to can be inspected.
+        // Only containers on the node Stackline is connected to can be inspected.
         if let Some(c) = container
             && let Ok(v) = client.get_json::<Value>(&format!("/containers/{c}/json")).await
         {

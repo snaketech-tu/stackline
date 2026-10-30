@@ -13,14 +13,14 @@
     ['csv', 'CSV (.csv)', ''],
   ]
   const L = app.logs
-  let format = $state<Format>((load('swarmdash-dl') as Format | null) ?? 'log')
+  let format = $state<Format>((load('stackline-dl') as Format | null) ?? 'log')
   let busy = $state(false)
   let open = $state(false)
   let arrow: HTMLButtonElement | undefined = $state()
 
   function pick(f: Format) {
     format = f
-    save('swarmdash-dl', f)
+    save('stackline-dl', f)
   }
 
   async function download(all: boolean) {
@@ -35,7 +35,7 @@
         app.notify(`Saved ${r.entries.toLocaleString()} entries to ${r.path}`)
       } else {
         const res = await apiFetch(`${path}?${query({ ...p, format })}`)
-        const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `swarmdash.${format}`
+        const name = /filename="([^"]+)"/.exec(res.headers.get('content-disposition') ?? '')?.[1] ?? `stackline.${format}`
         const url = URL.createObjectURL(await res.blob())
         const a = document.createElement('a')
         a.href = url

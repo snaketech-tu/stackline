@@ -1,5 +1,5 @@
 //! JSON API used by the UI. Every Docker access behind it is read-only; the
-//! only things written are swarmdash's own settings and log exports.
+//! only things written are Stackline's own settings and log exports.
 
 use std::sync::Arc;
 
@@ -10,10 +10,10 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use swarmdash_core::config::{Collect, ConnectionConfig, ConnectionKind, Settings, new_id};
-use swarmdash_core::logs::Level;
-use swarmdash_core::runtime::test_connection;
-use swarmdash_core::store::{ExportFormat, LogFilter};
+use stackline_core::config::{Collect, ConnectionConfig, ConnectionKind, Settings, new_id};
+use stackline_core::logs::Level;
+use stackline_core::runtime::test_connection;
+use stackline_core::store::{ExportFormat, LogFilter};
 
 use crate::AppState;
 
@@ -322,7 +322,7 @@ async fn test_alert(st: St) -> Json<Value> {
     let s = st.manager.config().settings;
     let native = st.manager.alerts.send(
         "Errors on your server",
-        &format!("This is how swarmdash tells you about {} or more errors in {} minutes.", s.alert_threshold, s.alert_window_mins),
+        &format!("This is how Stackline tells you about {} or more errors in {} minutes.", s.alert_threshold, s.alert_window_mins),
     );
     Json(json!({ "native": native }))
 }
@@ -334,7 +334,7 @@ async fn export(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> R
         "csv" => (ExportFormat::Csv, "csv", "text/csv"),
         _ => (ExportFormat::Log, "log", "text/plain"),
     };
-    let name = format!("swarmdash-{id}-{}.{ext}", chrono::Local::now().format("%Y%m%d-%H%M"));
+    let name = format!("stackline-{id}-{}.{ext}", chrono::Local::now().format("%Y%m%d-%H%M"));
     let f = p.filter();
     let store = st.manager.store.clone();
     if p.save.unwrap_or(false) {
@@ -371,7 +371,7 @@ async fn export(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> R
 }
 
 fn dirs_downloads() -> std::path::PathBuf {
-    swarmdash_core::config::downloads_dir()
+    stackline_core::config::downloads_dir()
 }
 
 async fn get_settings(st: St) -> Json<Settings> {

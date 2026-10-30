@@ -1,13 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["crates/swarmdash-core", "crates/swarmdash", "desktop/src-tauri"]
-default-members = ["crates/swarmdash-core", "crates/swarmdash"]
+members = ["crates/stackline-core", "crates/stackline", "desktop/src-tauri"]
+default-members = ["crates/stackline-core", "crates/stackline"]
 
 [workspace.package]
 version = "0.4.1"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/snaketech-tu/swarmdash"
+repository = "https://github.com/snaketech-tu/stackline"
 
 [profile.release]
 lto = "thin"

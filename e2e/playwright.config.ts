@@ -1,10 +1,10 @@
 import { defineConfig, devices } from '@playwright/test'
 
-export const TOKEN = process.env.SWARMDASH_TOKEN ?? '0123456789abcdef0123456789abcdef'
-const port = process.env.SWARMDASH_PORT ?? '7171'
+export const TOKEN = process.env.STACKLINE_TOKEN ?? '0123456789abcdef0123456789abcdef'
+const port = process.env.STACKLINE_PORT ?? '7171'
 
 // The tests run against the demo stack in dev/demo (see README.md here).
-// They share one swarmdash and one store, so they run one after another.
+// They share one Stackline and one store, so they run one after another.
 export default defineConfig({
   testDir: 'tests',
   fullyParallel: false,

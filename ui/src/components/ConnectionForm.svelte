@@ -93,7 +93,7 @@
     <label class="field">
       <span>Host</span>
       <input bind:value={target} placeholder="user@host, user@host:2222 or an alias" autocomplete="off" spellcheck="false" required />
-      <small>Aliases from <span class="mono">~/.ssh/config</span> work. swarmdash runs your own ssh; keys are never copied.</small>
+      <small>Aliases from <span class="mono">~/.ssh/config</span> work. Stackline runs your own ssh; keys are never copied.</small>
     </label>
     <details class="adv full" bind:open={advanced}>
       <summary><Icon name="chev" size={12} />Advanced: port, key file, jump host, Docker socket</summary>

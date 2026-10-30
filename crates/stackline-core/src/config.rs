@@ -23,7 +23,7 @@ pub struct AppConfig {
     pub collect: BTreeMap<String, Collect>,
 }
 
-/// The services of one connection whose logs swarmdash reads and stores.
+/// The services of one connection whose logs Stackline reads and stores.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Collect {
@@ -136,7 +136,7 @@ impl AppConfig {
     }
 }
 
-/// Where swarmdash keeps its files.
+/// Where Stackline keeps its files.
 pub struct Paths {
     pub config: PathBuf,
     pub store: PathBuf,
@@ -144,14 +144,43 @@ pub struct Paths {
 
 impl Paths {
     pub fn default_paths() -> Paths {
-        let cfg = dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("swarmdash");
-        let data = dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")).join("swarmdash");
+        let cfg = app_dir(dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")));
+        let data = app_dir(dirs::data_local_dir().unwrap_or_else(|| PathBuf::from(".")));
         Paths { config: cfg.join("config.json"), store: data.join("logs.db") }
     }
 
     pub fn in_dir(dir: &Path) -> Paths {
         Paths { config: dir.join("config.json"), store: dir.join("logs.db") }
     }
+}
+
+/// The app's folder under `base`. Stackline was called swarmdash before: its
+/// folder is moved over once, so settings, pins and stored logs are kept.
+/// While the move is not possible (another copy still has the store open),
+/// the old folder is used and the move is tried again on the next start.
+fn app_dir(base: PathBuf) -> PathBuf {
+    let dir = base.join("stackline");
+    let old = base.join("swarmdash");
+    if dir.exists() || !old.is_dir() {
+        return dir;
+    }
+    match std::fs::rename(&old, &dir) {
+        Ok(()) => {
+            tracing::info!("moved {} to {}", old.display(), dir.display());
+            dir
+        }
+        Err(e) => {
+            tracing::warn!("could not move {} to {}: {e}", old.display(), dir.display());
+            old
+        }
+    }
+}
+
+/// The environment variable `STACKLINE_<name>`, or `SWARMDASH_<name>` from
+/// before the rename. An update started by a swarmdash version hands over its
+/// sign-in token under the old name.
+pub fn env_var(name: &str) -> Option<String> {
+    std::env::var(format!("STACKLINE_{name}")).or_else(|_| std::env::var(format!("SWARMDASH_{name}"))).ok()
 }
 
 /// Where exported logs are saved when the browser cannot download them (desktop app).
@@ -202,6 +231,24 @@ mod tests {
         let back = serde_json::to_string(&c).unwrap();
         assert!(back.contains(r#""kind":"ssh""#));
         assert_eq!(new_id("Prod EU!", &["prod-eu".into()]), "prod-eu-2");
+    }
+
+    #[test]
+    fn moves_the_swarmdash_folder_once() {
+        let base = std::env::temp_dir().join(format!("stackline-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("swarmdash")).unwrap();
+        std::fs::write(base.join("swarmdash/config.json"), "{}").unwrap();
+        assert_eq!(app_dir(base.clone()), base.join("stackline"));
+        assert!(base.join("stackline/config.json").exists() && !base.join("swarmdash").exists());
+        // A folder left behind by an old copy later on is not merged in.
+        std::fs::create_dir_all(base.join("swarmdash")).unwrap();
+        assert_eq!(app_dir(base.clone()), base.join("stackline"));
+        assert!(base.join("swarmdash").exists());
+        // A new install has neither.
+        std::fs::remove_dir_all(&base).unwrap();
+        assert_eq!(app_dir(base.clone()), base.join("stackline"));
+        assert!(!base.exists());
     }
 
     #[test]

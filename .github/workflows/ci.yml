@@ -53,7 +53,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
-      - run: cargo build --release -p swarmdash
+      - run: cargo build --release -p stackline
 
   desktop:
     needs: ui
@@ -69,14 +69,14 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
       - name: Updater key in tauri.conf.json matches updater.pub
         run: |
-          [ "$(jq -r .plugins.updater.pubkey desktop/src-tauri/tauri.conf.json)" = "$(tr -d '\r\n' < crates/swarmdash/updater.pub)" ] \
-            || { echo "::error::plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json must equal crates/swarmdash/updater.pub"; exit 1; }
+          [ "$(jq -r .plugins.updater.pubkey desktop/src-tauri/tauri.conf.json)" = "$(tr -d '\r\n' < crates/stackline/updater.pub)" ] \
+            || { echo "::error::plugins.updater.pubkey in desktop/src-tauri/tauri.conf.json must equal crates/stackline/updater.pub"; exit 1; }
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy -p swarmdash-desktop -- -D warnings
-      - run: cargo build -p swarmdash-desktop
+      - run: cargo clippy -p stackline-desktop -- -D warnings
+      - run: cargo build -p stackline-desktop
 
-  # Clicks through the UI of `swarmdash serve` in a browser, against the demo Compose project.
+  # Clicks through the UI of `stackline serve` in a browser, against the demo Compose project.
   e2e:
     needs: ui
     runs-on: ubuntu-latest
@@ -95,7 +95,7 @@ jobs:
           docker compose -p demo -f dev/demo/compose.yaml up -d --pull never
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p swarmdash
+      - run: cargo build -p stackline
       - uses: actions/setup-node@v7
         with:
           node-version: 24

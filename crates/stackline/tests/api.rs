@@ -8,10 +8,10 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use swarmdash::update::Updater;
-use swarmdash::{AppState, router};
-use swarmdash_core::config::Paths;
-use swarmdash_core::runtime::Manager;
+use stackline::update::Updater;
+use stackline::{AppState, router};
+use stackline_core::config::Paths;
+use stackline_core::runtime::Manager;
 use tower::ServiceExt;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
@@ -34,7 +34,7 @@ fn app() -> App {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-    let dir = std::env::temp_dir().join(format!("swarmdash-api-test-{}-{nanos}-{n}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("stackline-api-test-{}-{nanos}-{n}", std::process::id()));
     let manager = Manager::new(Paths::in_dir(&dir)).unwrap();
     let state =
         Arc::new(AppState { manager, token: TOKEN.into(), desktop: false, allowed_hosts: vec![HOST.into()], updater: Updater::new(None) });
@@ -44,7 +44,7 @@ fn app() -> App {
 /// A signed-in request to this app's own address.
 fn req(method: &str, path: &str, body: Option<Value>) -> Request<Body> {
     let mut b =
-        Request::builder().method(method).uri(path).header(header::HOST, HOST).header(header::COOKIE, format!("swarmdash_token={TOKEN}"));
+        Request::builder().method(method).uri(path).header(header::HOST, HOST).header(header::COOKIE, format!("stackline_token={TOKEN}"));
     let body = match body {
         Some(v) => {
             b = b.header(header::CONTENT_TYPE, "application/json");
@@ -77,8 +77,24 @@ async fn the_api_needs_the_session_token() {
 
     // The header form, used during UI development.
     let with_header =
-        Request::builder().uri("/api/meta").header(header::HOST, HOST).header("x-swarmdash-token", TOKEN).body(Body::empty()).unwrap();
+        Request::builder().uri("/api/meta").header(header::HOST, HOST).header("x-stackline-token", TOKEN).body(Body::empty()).unwrap();
     assert_eq!(send(&app, with_header).await.0, StatusCode::OK);
+
+    // A tab signed in by swarmdash, the name before Stackline, stays signed in after the update.
+    let old_cookie = Request::builder()
+        .uri("/api/meta")
+        .header(header::HOST, HOST)
+        .header(header::COOKIE, format!("theme=dark; swarmdash_token={TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, old_cookie).await.0, StatusCode::OK);
+    let wrong = Request::builder()
+        .uri("/api/meta")
+        .header(header::HOST, HOST)
+        .header(header::COOKIE, "swarmdash_token=0000")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(send(&app, wrong).await.0, StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -87,7 +103,7 @@ async fn only_answers_on_its_own_address() {
     let elsewhere = Request::builder()
         .uri("/api/meta")
         .header(header::HOST, "dashboard.example.com")
-        .header(header::COOKIE, format!("swarmdash_token={TOKEN}"))
+        .header(header::COOKIE, format!("stackline_token={TOKEN}"))
         .body(Body::empty())
         .unwrap();
     assert_eq!(send(&app, elsewhere).await.0, StatusCode::FORBIDDEN);
@@ -100,7 +116,7 @@ async fn the_link_with_the_token_signs_the_browser_in() {
     let res = app.router.clone().oneshot(open).await.unwrap();
     assert!(res.status().is_redirection(), "{}", res.status());
     let cookie = res.headers().get(header::SET_COOKIE).unwrap().to_str().unwrap();
-    assert!(cookie.starts_with(&format!("swarmdash_token={TOKEN};")), "{cookie}");
+    assert!(cookie.starts_with(&format!("stackline_token={TOKEN};")), "{cookie}");
     assert!(cookie.contains("HttpOnly"), "{cookie}");
 
     // A wrong token signs nobody in.

@@ -1,6 +1,6 @@
 //! Fills a log store with realistic lines and times what the UI asks of it.
 //!
-//!     cargo run --release -p swarmdash-core --example storebench -- <store.db> [million lines] [services]
+//!     cargo run --release -p stackline-core --example storebench -- <store.db> [million lines] [services]
 //!
 //! An existing store is reused, so the fill only runs once.
 
@@ -8,11 +8,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use swarmdash_core::docker::frames::StreamKind;
-use swarmdash_core::logs::Level;
-use swarmdash_core::logs::assemble::Assembler;
-use swarmdash_core::model::LogSource;
-use swarmdash_core::store::{ExportFormat, LogFilter, Store};
+use stackline_core::docker::frames::StreamKind;
+use stackline_core::logs::Level;
+use stackline_core::logs::assemble::Assembler;
+use stackline_core::model::LogSource;
+use stackline_core::store::{ExportFormat, LogFilter, Store};
 
 const DAY: i64 = 86_400_000_000;
 
@@ -57,7 +57,7 @@ fn fill(store: &Store, total: u64, services: usize, now: i64) {
     let srcs: Vec<LogSource> = (0..services).map(source).collect();
     let mut asm: Vec<Assembler> = srcs.iter().map(|s| Assembler::new(&s.service)).collect();
     let mut buf = Vec::new();
-    let mut batches: Vec<Vec<swarmdash_core::logs::LogEntry>> = vec![Vec::new(); services];
+    let mut batches: Vec<Vec<stackline_core::logs::LogEntry>> = vec![Vec::new(); services];
     let mut written = 0u64;
     let mut n = 0u64;
     while written < total {

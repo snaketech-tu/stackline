@@ -1,7 +1,7 @@
 import { svelte } from '@sveltejs/vite-plugin-svelte'
 import { defineConfig } from 'vite'
 
-// During `npm run dev`, API calls go to a running `swarmdash serve --port 7070`.
+// During `npm run dev`, API calls go to a running `stackline serve --port 7070`.
 export default defineConfig({
   plugins: [svelte()],
   server: {
