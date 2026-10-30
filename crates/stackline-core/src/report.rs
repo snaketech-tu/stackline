@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use crate::details::ServiceDetails;
 use crate::events::{Event, Kind};
 use crate::model::{Host, Service};
-use crate::store::{EntryOut, Group, LevelCounts, Quiet};
+use crate::store::{EntryOut, Group, LevelCounts, NewGroup, Quiet};
 
 /// How many lines of an error sample or a log entry are kept.
 const MAX_LINES: usize = 15;
@@ -35,6 +35,8 @@ pub struct Report<'a> {
     /// What the replica of the newest crash printed just before, oldest first.
     pub before_crash: &'a [EntryOut],
     pub quiet: Option<&'a Quiet>,
+    /// Error groups first seen after the newest deploy in `events`.
+    pub new_since_deploy: &'a [NewGroup],
     /// Unix ms.
     pub now: i64,
     pub version: &'a str,
@@ -46,11 +48,12 @@ pub fn markdown(r: &Report) -> String {
     let _ = writeln!(o, "# Debug report: {}\n", s.full_name);
     let _ = writeln!(
         o,
-        "Connection **{}** · host `{}` · Docker {} · {} · {} by Stackline {}\n",
+        "Connection **{}** · host `{}` · {} {} · {} · {} by Stackline {}\n",
         r.connection,
         r.host.name,
+        r.host.engine,
         r.host.docker_version,
-        if r.host.swarm_state == "active" { "swarm" } else { "plain Docker" },
+        if r.host.swarm_state == "active" { "swarm" } else { "no swarm" },
         time_ms(r.now),
         r.version
     );
@@ -166,18 +169,30 @@ pub fn markdown(r: &Report) -> String {
 
     let crashes: Vec<&Event> = r.events.iter().filter(|e| e.kind != Kind::Start).collect();
     if !crashes.is_empty() {
-        o.push_str("\n## Stops and crashes\n\n");
+        o.push_str("\n## Deploys, stops and crashes\n\n");
         let skip = crashes.len().saturating_sub(MAX_EVENTS);
         if skip > 0 {
             let _ = writeln!(o, "{skip} earlier ones left out.\n");
         }
         for e in &crashes[skip..] {
-            let mut line = format!("- {} replica {}: {}", time_us(e.ts), e.replica, event_label(e));
-            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty() && e.kind != Kind::Failed) {
+            let mut line = if e.kind == Kind::Deploy {
+                format!("- {} {}", time_us(e.ts), event_label(e))
+            } else {
+                format!("- {} replica {}: {}", time_us(e.ts), e.replica, event_label(e))
+            };
+            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty() && !matches!(e.kind, Kind::Failed | Kind::Deploy)) {
                 let _ = write!(line, " · {}", one_line(d));
             }
             o.push_str(&line);
             o.push('\n');
+        }
+    }
+
+    if let Some(d) = r.events.iter().rev().find(|e| e.kind == Kind::Deploy).filter(|_| !r.new_since_deploy.is_empty()) {
+        let _ = writeln!(o, "\n## New since the last deploy\n\nError groups first seen after the deploy at {}:\n", time_us(d.ts));
+        for g in r.new_since_deploy.iter().take(MAX_GROUPS) {
+            let what = if g.pattern.is_empty() { first_line(&g.sample) } else { g.pattern.as_str() };
+            let _ = writeln!(o, "- **{}×** {}, first {}", g.count, code(&cut(what, 200)), time_us(g.first));
         }
     }
 
@@ -269,6 +284,10 @@ fn event_label(e: &Event) -> String {
         Kind::Crash => format!("crashed{code}"),
         Kind::Oom => "out of memory".into(),
         Kind::Unhealthy => "health check failed".into(),
+        Kind::Deploy => match e.detail.as_deref().filter(|d| !d.is_empty()) {
+            Some(d) => format!("deployed: {d}"),
+            None => "deployed".into(),
+        },
         Kind::Failed => match e.detail.as_deref().filter(|d| !d.is_empty()) {
             Some(d) => format!("failed: {}{code}", one_line(d)),
             None => format!("failed{code}"),
@@ -297,6 +316,7 @@ mod tests {
             name: "box".into(),
             os: "Linux".into(),
             kernel: "6".into(),
+            engine: "Docker".into(),
             docker_version: "27.1".into(),
             api_version: "1.46".into(),
             ncpu: 4,
@@ -344,6 +364,7 @@ mod tests {
             }],
             cpu_percent: None,
             mem_used: None,
+            config: Default::default(),
         };
         let crash = Event {
             key: "k".into(),
@@ -387,6 +408,7 @@ mod tests {
             events: std::slice::from_ref(&crash),
             before_crash: std::slice::from_ref(&line),
             quiet: Some(&quiet),
+            new_since_deploy: &[],
             now: 1_761_750_200_000,
             version: "0.5.0",
         });

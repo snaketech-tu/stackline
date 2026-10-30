@@ -42,7 +42,7 @@
       })
       .catch(() => {})
   })
-  // Crashes and failed health checks of the chart's window, marked on it and listed when recent.
+  // Crashes, failed health checks and deploys of the chart's window, marked on it and listed when recent.
   let events = $state.raw<DockerEvent[]>([])
   $effect(() => {
     const id = app.activeId
@@ -50,7 +50,7 @@
     const to = Date.now()
     fetchEvents(id, { from: to - 6 * 3600e3, to: to + 60e3, limit: 2000 })
       .then((x) => {
-        if (id === app.activeId) events = x.filter((e) => isCrash(e) || e.kind === 'unhealthy')
+        if (id === app.activeId) events = x.filter((e) => isCrash(e) || e.kind === 'unhealthy' || e.kind === 'deploy')
       })
       .catch(() => {})
   })
@@ -133,7 +133,26 @@
         acts: s ? acts(s) : [],
       })
     }
+    // Errors that only started after a deploy of the last 6 hours: the deploy is the likely cause.
+    for (const d of app.deploys) {
+      if (!d.newErrors.length || d.event.ts / 1000 < app.now - 6 * 3600e3) continue
+      const s = app.services.find((x) => x.fullName === d.event.service)
+      const g = d.newErrors[0]
+      const n = d.newErrors.length
+      out.push({
+        sev: 'warn',
+        title: `${n === 1 ? '<b>New error</b>' : `<b>${n} new errors</b>`} since ${esc(d.event.service)} was deployed at ${hhmm(d.event.ts / 1000)}`,
+        pill: ['warn', `since deploy · ${g.count}×`],
+        why: [g.pattern || firstLine(g.sample), d.event.detail ?? ''].filter(Boolean).join(' · '),
+        acts: [
+          { label: 'Show', run: () => app.showGroup(g.fp, [g.service]) },
+          { label: 'Lines after', run: () => app.showDeploy(d.event), ghost: true },
+          ...(s ? [{ label: 'Details', run: () => app.openService(s.key), ghost: true }] : []),
+        ],
+      })
+    }
     for (const g of app.errors?.newGroups ?? []) {
+      if (app.newSinceDeploy.has(g.fp)) continue
       out.push({
         sev: 'warn',
         title: `<b>New error</b> in ${esc(g.service)}`,
@@ -256,7 +275,8 @@
     {/if}
     <div class="legend" style="padding:0 14px 12px 52px">
       <span><i style="background:var(--err)"></i>Errors</span><span><i style="background:var(--warn)"></i>Warnings</span><span><i class="line" style="background:var(--exc)"></i>Exceptions</span>
-      {#if events.length}<span><i class="mark" style="background:var(--err)"></i>Crashes</span>{/if}
+      {#if events.some((e) => e.kind !== 'deploy')}<span><i class="mark" style="background:var(--err)"></i>Crashes</span>{/if}
+      {#if events.some((e) => e.kind === 'deploy')}<span><i class="mark" style="background:var(--accent)"></i>Deploys</span>{/if}
     </div>
   </section>
 </div>
@@ -272,7 +292,7 @@
   <section class="panel">
     <div class="ph">
       <h2>Host</h2>
-      <span class="mono muted hide-sm" style="font-size:12px">{host.name} · {host.os} · Docker {host.dockerVersion}</span>
+      <span class="mono muted hide-sm" style="font-size:12px">{host.name} · {host.os} · {host.engine} {host.dockerVersion}</span>
       <span class="spacer"></span>
       {#if snap.nodes[0]}<button class="btn ghost" onclick={() => (app.drawer = { kind: 'node', id: snap.nodes[0].id })}>Details</button>{/if}
     </div>

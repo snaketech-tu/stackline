@@ -13,6 +13,7 @@ macro_rules! regex {
 pub mod alerts;
 pub mod collector;
 pub mod config;
+pub mod deploys;
 pub mod details;
 pub mod docker;
 pub mod events;

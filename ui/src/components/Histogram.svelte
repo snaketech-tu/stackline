@@ -3,7 +3,7 @@
   // Drag across it to zoom into a time range.
   import type { Bucket, DockerEvent, Level } from '../lib/types'
   import { hhmm, dayHhmm } from '../lib/format'
-  import { eventColor, eventLabel, isCrash } from '../lib/events'
+  import { eventColor, eventLabel, eventWho, isCrash } from '../lib/events'
 
   let {
     buckets,
@@ -157,7 +157,7 @@
       {/each}
       {#if exc}<div><span style:color="var(--exc)">Exceptions</span><span class="mono">{b.exc}</span></div>{/if}
       {#each evs.slice(-4) as e, i (i)}
-        <div class="ev"><span style:color={eventColor(e)}>{clock(e.ts)} {e.service} #{e.replica}</span><span>{eventLabel(e)}</span></div>
+        <div class="ev"><span style:color={eventColor(e)}>{clock(e.ts)} {eventWho(e)}</span><span>{eventLabel(e)}</span></div>
       {/each}
       {#if evs.length > 4}<span class="muted" style="font-size:11px">and {evs.length - 4} more</span>{/if}
       {#if onrange}<span class="muted" style="font-size:11px;margin-top:4px">Drag to zoom</span>{/if}

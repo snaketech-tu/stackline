@@ -319,6 +319,7 @@ impl Manager {
             let mut collector = Collector::new(&r.cfg.id, m.store.clone());
             let mut events = EventPoller::new(&r.cfg.id, m.store.clone());
             let mut bound: Option<String> = None;
+            let mut deploys_at = 0;
             loop {
                 let settings = m.config().settings;
                 let snap = r.snapshot();
@@ -342,6 +343,15 @@ impl Manager {
                         }
                     }
                     let retention = settings.retention_days.max(1) as i64 * 86_400_000_000;
+                    // Deploys: once per new snapshot.
+                    if snap.fetched_at != deploys_at {
+                        deploys_at = snap.fetched_at;
+                        let (store, conn, snap2) = (m.store.clone(), r.cfg.id.clone(), snap.clone());
+                        let from = chrono::Utc::now().timestamp_micros() - retention;
+                        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || crate::deploys::record(&store, &conn, &snap2, from)).await {
+                            tracing::warn!("could not record the deploys of {}: {e:#}", r.cfg.name);
+                        }
+                    }
                     let collect = m.config().collect.remove(&r.cfg.id).unwrap_or_default();
                     let sources = snap.log_sources().into_iter().filter(|s| collect.wants(&s.service)).collect();
                     let mut report = collector.poll(&client, sources, retention).await;
@@ -494,7 +504,12 @@ pub async fn test_connection(cfg: &ConnectionConfig) -> Vec<TestStep> {
     let t = Instant::now();
     match client.get_json::<serde_json::Value>("/version").await {
         Ok(v) => steps.push(TestStep {
-            label: format!("Docker {} (API {})", v["Version"].as_str().unwrap_or("?"), v["ApiVersion"].as_str().unwrap_or("?")),
+            label: format!(
+                "{} {} (API {})",
+                snapshot::engine_name(&v),
+                v["Version"].as_str().unwrap_or("?"),
+                v["ApiVersion"].as_str().unwrap_or("?")
+            ),
             ok: true,
             detail: None,
             ms: t.elapsed().as_millis() as u64,

@@ -32,7 +32,7 @@
     <dl class="kv">
       <dt>Address</dt><dd>{n.addr || '–'}</dd>
       <dt>OS</dt><dd>{n.os}</dd>
-      <dt>Engine</dt><dd>Docker {n.engine}</dd>
+      <dt>Engine</dt><dd>{app.snap?.host.engine ?? 'Docker'} {n.engine}</dd>
       <dt>Resources</dt><dd>{n.ncpu} CPUs · {bytes(n.memTotal)}</dd>
       <dt>Usage</dt><dd>CPU {pct(n.cpuPercent)} · memory {pct(memPct(n.memUsed, n.memTotal))}</dd>
       {#if n.reachability}<dt>Manager</dt><dd>{n.reachability}</dd>{/if}

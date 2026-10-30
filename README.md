@@ -28,7 +28,8 @@ that opens the dashboard in your browser.
   containers, with failure details and pinned services close at hand.
 - **Follow a complete stack trace.** Logs are collected separately for each replica
   and multiline entries are reassembled, so traces from different replicas stay
-  separate. Supports Java, .NET, Python, Node.js, PostgreSQL and MariaDB patterns.
+  separate. Supports Java, .NET, Python, Node.js, Go, Rust, PHP, Ruby, PostgreSQL,
+  MariaDB, MongoDB, Redis, nginx, Traefik and Caddy patterns.
 - **Make repeated errors readable.** Group similar errors by exception and message,
   inspect their frequency over time, and expand the full trace.
 - **Search and share logs.** Filter by service, stack, level, node or replica;
@@ -38,6 +39,9 @@ that opens the dashboard in your browser.
 - **See when containers crashed.** Starts, stops, crashes, out-of-memory kills
   and failed health checks from Docker's events are marked on the time graphs,
   each with the log lines its replica printed just before.
+- **See what a deploy changed.** Deploys are marked too, with what changed
+  (image, replicas, environment variable names, ports, limits), and errors that
+  only started after a deploy are flagged as **new since deploy**.
 - **See how a service is set up.** Image, command, ports, networks, mounts,
   restart policy, limits, health checks with their latest results, environment
   variables (secret-looking values stay hidden), labels and swarm settings.
@@ -131,6 +135,17 @@ One SSH tunnel forwards the remote Docker socket, `/var/run/docker.sock` by
 default. SSH forwarding must be allowed, and the SSH user must be able to open
 that socket without `sudo`. You can override the socket path, key file, port
 and jump host under **Advanced** in the connection form.
+
+### Podman
+
+Podman answers the same API as Docker, so Stackline reads it the same way.
+Switch on its API socket first: `systemctl enable --now podman.socket` as root,
+or `systemctl --user enable --now podman.socket` for Podman without root.
+**This computer** finds the socket by itself when there is no Docker. Over SSH,
+pick **Podman as root** (`/run/podman/podman.sock`) or **Podman without root**
+(`/run/user/<uid>/podman/podman.sock`, where `id -u` on the server prints the
+uid) under **Advanced**. Containers started with `podman compose` or
+`podman-compose` are grouped like Compose projects. Podman has no swarm mode.
 
 For **Docker Swarm**, connect to a **manager node** to see cluster nodes,
 services and task logs. A worker connection shows only that host's containers.
