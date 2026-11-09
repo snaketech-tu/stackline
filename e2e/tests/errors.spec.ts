@@ -1,10 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
-import { clipped, open } from './helpers'
+import { clipped, inspect } from './helpers'
 
 async function openErrors(page: Page, service: string) {
-  await open(page, 'stacks')
-  await page.getByRole('button', { name: new RegExp(`^Errors of .*${service}$`) }).click()
-  const drawer = page.getByRole('dialog')
+  const drawer = await inspect(page, `demo/${service}`, /^Errors/)
   await expect(drawer.getByRole('tab', { name: /Errors/ })).toHaveAttribute('aria-selected', 'true')
   await expect(drawer.locator('.ecard').first()).toBeVisible()
   return drawer
@@ -40,7 +38,7 @@ for (const [service, width] of [['shop', 1400], ['worker', 1400], ['worker', 100
 test('an error group opens its lines in Logs', async ({ page }) => {
   const drawer = await openErrors(page, 'shop')
   await drawer.locator('.ecard').first().getByRole('button', { name: /^Show all .* in Logs$/ }).click()
-  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.locator('.drawer')).toHaveCount(0)
   await expect(page).toHaveURL(/#logs\?.*g=[0-9a-f]+/)
   await expect(page.locator('.stream .row').first()).toBeVisible()
 })

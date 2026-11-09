@@ -1,12 +1,11 @@
 import { expect, test } from '@playwright/test'
-import { open } from './helpers'
+import { inspect } from './helpers'
 
 test.use({ permissions: ['clipboard-read', 'clipboard-write'] })
 
 test('a service panel copies a debug report as Markdown', async ({ page }) => {
-  await open(page, 'stacks')
-  await page.getByRole('row', { name: /demo_shop/ }).first().click()
-  await page.getByRole('dialog').getByRole('button', { name: 'Debug report' }).click()
+  const drawer = await inspect(page, 'demo/shop')
+  await drawer.getByRole('button', { name: 'Debug report' }).click()
   await expect(page.locator('.toast')).toContainText('Debug report copied')
   const md = await page.evaluate(() => navigator.clipboard.readText())
   expect(md).toContain('# Debug report: demo_shop')

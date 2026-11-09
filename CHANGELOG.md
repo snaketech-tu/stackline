@@ -3,6 +3,20 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## Unreleased
+
+Stackline now works like Kubri: lists you can drive with the keyboard, an inspector beside the list, and a log workspace that keeps running while you look around. It is still strictly read-only.
+
+### Changed
+- **New layout.** The sidebar groups the pages (Overview; Workloads: Stacks, Services, Tasks; Cluster: Nodes; Logs) and lists your pinned services, with a box that finds a page or service by name. The top bar has Back and Forward, the connection, a **stack picker** that narrows every list to one stack, **Search or run a command**, the theme and a Read-only badge. A status bar at the bottom shows whether the connection is live and the keys of the page
+- **Stacks, Services, Tasks and Nodes are lists of their own**, each with a filter (`/`), tabs (All, Needs attention, Pinned or Running), sortable columns and an action bar that names the row it acts on. Move with `j`/`k` or the arrow keys; **Enter opens what is inside**: a stack's services, a service's tasks, a node's tasks. Back returns to the list as you left it, filter and cursor included. Filter and tab are kept after a restart
+- **The service panel is now an inspector docked beside the list.** Click a row or press `d`. Moving the cursor takes the inspector along. Its tabs are Overview (with the likely problem of a failing service), Events (deploys, stops and crashes), Config (command, health check, networks, mounts, environment, labels), Logs and Errors. The expand button lets it use the whole page. Nodes get an inspector too
+- **The Tasks page** (Containers on a host without swarm) lists every task with its node, state, exit code, failed attempts, CPU, memory and Docker's message
+
+### Added
+- **Log workspace.** Press `l` on a service, stack, task or node (or **Tail below** in the inspector) to follow its lines in a tab at the bottom of the window. The tabs keep following while you use the rest of the app, can be resized, shrunk with `w`, and are remembered per connection
+- **Keys everywhere.** `:` or Ctrl K opens the command palette, which also runs commands (narrow the lists to a stack, close the workspace, show the keys). `?` lists every key. `g` then a letter goes to a page (`g s` Services, `g t` Tasks, `g k` Stacks, `g l` Logs…); Alt ← and Alt → go back and forward
+
 ## 0.5.1
 
 Logs no longer end without warning: the stream pages through every stored line, and long lines are stored whole.

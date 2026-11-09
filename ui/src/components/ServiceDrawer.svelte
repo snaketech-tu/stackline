@@ -1,7 +1,7 @@
 <script lang="ts">
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
-  import { app, LEVELS, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
+  import { app, LEVELS, LogFilters, type ServiceTab } from '../lib/state.svelte'
   import { api, apiFetch, fetchEvents, fetchLogs, query, type LogParams } from '../lib/api'
   import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
   import { eventColor, eventLabel, isCrash } from '../lib/events'
@@ -29,12 +29,6 @@
   let replica = $state<string | null>(null)
   let qInput = $state('')
   let q = $state('')
-  /** Covers the whole window instead of most of it. */
-  let full = $state(load('stackline-drawer-full') === '1')
-  function toggleFull() {
-    full = !full
-    save('stackline-drawer-full', full ? '1' : '0')
-  }
   $effect(() => {
     const v = qInput
     const t = setTimeout(() => (q = v.trim()), 250)
@@ -185,11 +179,10 @@
 
 <svelte:window onkeydown={keydown} />
 
-<Drawer title={s ? s.fullName : key} size={full ? 'full' : 'wide'}>
+<Drawer title={s ? s.fullName : key} kind="Service inspector" docked>
   {#snippet actions()}
     <button class="btn sm ghost" title="Copy a debug report of this service as Markdown: configuration, error groups, crashes and the lines before the last one. Environment values are left out." onclick={copyReport} disabled={copying || !s}><Icon name="copy" size={14} /><span class="hide-sm">{copying ? 'Copying…' : 'Debug report'}</span></button>
     <PinButton {key} />
-    <button class="ib hide-sm" title={full ? 'Leave some of the page visible' : 'Use the whole window'} aria-label={full ? 'Smaller' : 'Use the whole window'} onclick={toggleFull}><Icon name={full ? 'minimize' : 'maximize'} size={15} /></button>
     <button class="ib" title="Previous service ( [ )" aria-label="Previous service" onclick={() => step(-1)}><Icon name="chevL" size={16} /></button>
     <button class="ib" title="Next service ( ] )" aria-label="Next service" onclick={() => step(1)}><Icon name="chev" size={16} /></button>
   {/snippet}
@@ -201,14 +194,14 @@
     {/if}
   {/snippet}
   {#snippet tabs()}
-    {#each [['overview', 'Overview'], ['logs', 'Logs'], ['errors', 'Errors']] as [k, label] (k)}
-      <button role="tab" aria-selected={tab === k} onclick={() => setTab(k as ServiceTab)}>{label}{#if k === 'errors' && errs}<span class="n" title="Errors in the last hour">{errs.toLocaleString()}</span>{/if}</button>
+    {#each [['overview', 'Overview'], ['events', 'Events'], ['config', 'Config'], ['logs', 'Logs'], ['errors', 'Errors']] as [k, label] (k)}
+      <button role="tab" aria-selected={tab === k} onclick={() => setTab(k as ServiceTab)}>{label}{#if k === 'errors' && errs}<span class="n" title="Errors in the last hour">{errs.toLocaleString()}</span>{:else if k === 'events' && crashes}<span class="n" title="Crashes in the last 24 hours">{crashes}</span>{/if}</button>
     {/each}
   {/snippet}
   {#snippet foot()}
-    <span>Read-only. Nothing here can restart or change this service.</span>
-    <span class="spacer"></span>
     {#if s}<span class="toggle" title="Read and store the logs of this service">Collect logs<CollectSwitch names={[s.fullName]} label={s.fullName} /></span>{/if}
+    <span class="spacer"></span>
+    {#if s}<button class="btn sm" title="Follow its lines in the workspace below, while you look at other things (l)" onclick={() => app.dock.open(s!.fullName, s!.fullName)}><Icon name="logs" size={13} />Tail below</button>{/if}
     {#if s}<button class="btn pri sm" onclick={() => app.showLogs([s!.fullName])}><Icon name="external" size={13} />Open in Logs</button>{/if}
   {/snippet}
 
@@ -267,35 +260,15 @@
         {#if d.newErrors.length > 3}<span class="muted" style="font-size:12px">and {d.newErrors.length - 3} more</span>{/if}
       </div>
     {/if}
-    {#if notable.length}
-      <div>
-        <h4>Deploys, stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
-        <div class="tw boxed">
-          <table class="evlist">
-            <tbody>
-              {#each notable.slice(0, 8) as e (e.ts + e.source + e.kind)}
-                <tr>
-                  <td class="mono muted" style="white-space:nowrap" title={dateTime(e.ts / 1000)}>{when(e.ts)}</td>
-                  <td class="mono" style="white-space:nowrap">{e.kind === 'deploy' ? '' : `#${e.replica}`}</td>
-                  <td style:color={eventColor(e) === 'var(--muted)' ? undefined : eventColor(e)}>{eventLabel(e)}</td>
-                  <td class="actcell">
-                    {#if e.kind === 'deploy'}
-                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showDeploy(e)} title="What the service logged from a minute before the deploy to 10 minutes after">Lines after</button>
-                    {:else}
-                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button>
-                    {/if}
-                  </td>
-                </tr>
-              {/each}
-            </tbody>
-          </table>
-        </div>
-        {#if notable.length > 8}<span class="muted" style="font-size:12px">and {notable.length - 8} earlier</span>{/if}
-      </div>
+    {#if crashes}
+      <button class="callout warnish" onclick={() => setTab('events')}>
+        <span class="h"><Icon name="clock" size={14} />{crashes} {crashes === 1 ? 'crash' : 'crashes'} in the last 24 hours</span>
+        <span class="muted" style="font-size:12px">See when, and the lines each replica printed before it stopped.</span>
+      </button>
     {/if}
     {@const d = details}
     <div class="dsec">
-      <h4>Service</h4>
+      <h4>At a glance</h4>
       <dl class="kv">
         <dt>Image</dt><dd>{d?.image || s.image}</dd>
         <dt>Ports</dt><dd>{(d?.ports.length ? d.ports : s.ports).join(', ') || '–'}</dd>
@@ -314,31 +287,6 @@
       </dl>
       {#if detailsError && !d}<span class="muted" style="font-size:12px">More details could not be read: {detailsError}</span>{/if}
     </div>
-    {#if d && (d.entrypoint || d.command || d.workdir || d.user)}
-      <div class="dsec">
-        <h4>Command</h4>
-        <dl class="kv">
-          {#if d.entrypoint}<dt>Entrypoint</dt><dd class="wrap">{d.entrypoint}</dd>{/if}
-          {#if d.command}<dt>Command</dt><dd class="wrap">{d.command}</dd>{/if}
-          {#if d.workdir}<dt>Working dir</dt><dd>{d.workdir}</dd>{/if}
-          {#if d.user}<dt>User</dt><dd>{d.user}</dd>{/if}
-          {#if d.hostname}<dt>Hostname</dt><dd>{d.hostname}</dd>{/if}
-        </dl>
-      </div>
-    {/if}
-    {#if d?.healthcheck}
-      <div class="dsec">
-        <h4>Health check</h4>
-        <dl class="kv"><dt>Runs</dt><dd class="wrap">{d.healthcheck}</dd></dl>
-        {#if d.healthLog.length}
-          <div class="hlog">
-            {#each d.healthLog as h, i (i)}
-              <div><span class="muted mono">{h.at ? hhmm(h.at) : '–'}</span><span class="pill {h.exitCode === 0 ? 'ok' : 'err'}">{h.exitCode === 0 ? 'ok' : `exit ${h.exitCode}`}</span><pre>{h.output || '(no output)'}</pre></div>
-            {/each}
-          </div>
-        {/if}
-      </div>
-    {/if}
     <div>
       <h4>{s.kind === 'swarm' ? 'Tasks' : 'Containers'}</h4>
       <div class="tw boxed">
@@ -366,8 +314,66 @@
         </table>
       </div>
     </div>
-    {#if details}
-      {@const d = details}
+  {:else if tab === 'events'}
+    <div>
+      <h4>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? 'last 6h' : `since ${hhmm(win.from)}`}</h4>
+      {#if hist}<div class="boxed"><Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} height={110} marks={events} /></div>{/if}
+    </div>
+    {#if notable.length}
+      <div>
+        <h4>Deploys, stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
+        <div class="tw boxed">
+          <table class="evlist">
+            <tbody>
+              {#each notable as e (e.ts + e.source + e.kind)}
+                <tr>
+                  <td class="mono muted" style="white-space:nowrap" title={dateTime(e.ts / 1000)}>{when(e.ts)}</td>
+                  <td class="mono" style="white-space:nowrap">{e.kind === 'deploy' ? '' : `#${e.replica}`}</td>
+                  <td style:color={eventColor(e) === 'var(--muted)' ? undefined : eventColor(e)}>{eventLabel(e)}</td>
+                  <td class="actcell">
+                    {#if e.kind === 'deploy'}
+                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showDeploy(e)} title="What the service logged from a minute before the deploy to 10 minutes after">Lines after</button>
+                    {:else}
+                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {/if}
+    {#if !notable.length}<div class="empty">No deploys, stops or crashes of this service in the last 24 hours.</div>{/if}
+  {:else if tab === 'config'}
+    {@const d = details}
+    {#if !d}<div class="empty">{detailsError ? `The configuration could not be read: ${detailsError}` : 'Reading the configuration…'}</div>{/if}
+    {#if d && (d.entrypoint || d.command || d.workdir || d.user)}
+      <div class="dsec">
+        <h4>Command</h4>
+        <dl class="kv">
+          {#if d.entrypoint}<dt>Entrypoint</dt><dd class="wrap">{d.entrypoint}</dd>{/if}
+          {#if d.command}<dt>Command</dt><dd class="wrap">{d.command}</dd>{/if}
+          {#if d.workdir}<dt>Working dir</dt><dd>{d.workdir}</dd>{/if}
+          {#if d.user}<dt>User</dt><dd>{d.user}</dd>{/if}
+          {#if d.hostname}<dt>Hostname</dt><dd>{d.hostname}</dd>{/if}
+        </dl>
+      </div>
+    {/if}
+    {#if d?.healthcheck}
+      <div class="dsec">
+        <h4>Health check</h4>
+        <dl class="kv"><dt>Runs</dt><dd class="wrap">{d.healthcheck}</dd></dl>
+        {#if d.healthLog.length}
+          <div class="hlog">
+            {#each d.healthLog as h, i (i)}
+              <div><span class="muted mono">{h.at ? hhmm(h.at) : '–'}</span><span class="pill {h.exitCode === 0 ? 'ok' : 'err'}">{h.exitCode === 0 ? 'ok' : `exit ${h.exitCode}`}</span><pre>{h.output || '(no output)'}</pre></div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
+    {#if d}
       {#if d.networks.length || d.mounts.length}
         <div class="dsec">
           <h4>Networks and storage</h4>
@@ -406,10 +412,6 @@
         </details>
       {/if}
     {/if}
-    <div>
-      <h4>Errors &amp; warnings · {win.to - win.from > 5.9 * 3600e3 ? 'last 6h' : `since ${hhmm(win.from)}`}</h4>
-      {#if hist}<div class="boxed"><Histogram buckets={hist.result.histogram} from={win.from} to={win.to} levels={['WARN', 'ERROR']} height={110} marks={events} /></div>{/if}
-    </div>
   {:else if tab === 'logs'}
     <div class="fbar">
       <span class="lvgroup" role="group" aria-label="Levels">

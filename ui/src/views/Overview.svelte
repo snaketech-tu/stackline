@@ -182,9 +182,7 @@
     return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!)
   }
   function openStack(name: string) {
-    app.stackQ = name
-    app.stackFilter = 'all'
-    app.go('stacks')
+    app.drill('services', { stack: name })
   }
   function stackErrors(name: string) {
     const st = snap.stacks.find((s) => s.name === name)
@@ -228,19 +226,19 @@
       <span class="go">All nodes →</span>
     </button>
   {/if}
-  <button class="panel kpi" onclick={() => { app.stackQ = ''; app.stackFilter = healthy < services.length ? 'problems' : 'all'; app.go('stacks') }}>
+  <button class="panel kpi" onclick={() => app.showServices(healthy < services.length ? 'attention' : 'all')}>
     <span class="lbl">Services healthy</span>
     <span class="val">{healthy}<small>/{services.length}</small></span>
     <span class="sub">{#if healthy < services.length}{services.length - healthy} not healthy · {/if}across {plural(snap.stacks.length, 'stack')}</span>
     <Ring value={healthy} total={services.length} />
     <span class="go">{healthy < services.length ? 'Show problems →' : 'All services →'}</span>
   </button>
-  <button class="panel kpi" onclick={() => { app.stackQ = ''; app.stackFilter = 'all'; app.go('stacks') }}>
+  <button class="panel kpi" onclick={() => { app.lists.tasks.q = ''; app.drill('tasks') }}>
     <span class="lbl">{snap.mode === 'swarm' ? 'Tasks running' : 'Containers running'}</span>
     <span class="val">{running}<small>/{tasks.length}</small></span>
     <span class="sub">{tasks.length - running} stopped, pending or failed</span>
     <Ring value={running} total={tasks.length} />
-    <span class="go">All services →</span>
+    <span class="go">{snap.mode === 'swarm' ? 'All tasks →' : 'All containers →'}</span>
   </button>
   <button class="panel kpi" class:alert={err1 > 0} onclick={errorsOnly}>
     <span class="lbl">Errors · last hour</span>
@@ -283,7 +281,7 @@
 
 {#if app.pinnedServices.length}
   <section class="panel">
-    <div class="ph"><h2><Icon name="star" size={15} fill class="star-ic" /> Pinned services</h2><span class="spacer"></span><button class="btn ghost sm" onclick={() => { app.stackQ = ''; app.stackFilter = 'pinned'; app.go('stacks') }}>All pinned</button></div>
+    <div class="ph"><h2><Icon name="star" size={15} fill class="star-ic" /> Pinned services</h2><span class="spacer"></span><button class="btn ghost sm" onclick={() => app.showServices('pinned')}>All pinned</button></div>
     <ServiceTable services={app.pinnedServices} stackCol full={false} />
   </section>
 {/if}
@@ -320,7 +318,7 @@
 {/if}
 
 <section class="panel">
-  <div class="ph"><h2>Stacks</h2><span class="spacer"></span><a class="btn ghost sm" href="#stacks" onclick={() => { app.stackQ = ''; app.stackFilter = 'all' }}>All stacks</a></div>
+  <div class="ph"><h2>Stacks</h2><span class="spacer"></span><a class="btn ghost sm" href="#stacks">All stacks</a></div>
   <div class="tw">
     <table>
       <thead><tr><th>Stack</th><th>Services</th><th>Status</th><th class="hide-sm">Errors 1h</th><th class="hide-sm">Last update</th><th class="actcell"><span class="sr">Actions</span></th></tr></thead>
