@@ -197,12 +197,14 @@ async fn read_source(
                 decoder.push(&data, &mut lines);
             }
         }
-        // A read cut short by the deadline ends inside a line: that line is
-        // read again whole by the next poll instead of being stored cut off.
-        if complete {
-            decoder.finish(&mut lines);
+        if !complete {
+            // Cut short by the deadline: what came is the start of the newest
+            // `tail` lines, which may begin after lines not read yet. Read
+            // everything after the cursor instead.
+            return read_stream(client, store, conn, st, &path, Duration::from_secs(600), now).await;
         }
-        if !complete || lines.len() < tail / 2 {
+        decoder.finish(&mut lines);
+        if lines.len() < tail / 2 {
             if lines.len() < tail / 8 {
                 st.tail = (tail / 2).max(TAIL_MIN);
             }
@@ -297,6 +299,12 @@ fn consume(
 async fn flush(store: &Arc<Store>, conn: &str, st: &mut SourceState, entries: &mut Vec<LogEntry>, last_ts: Option<i64>) -> Result<usize> {
     let batch = std::mem::take(entries);
     let n = batch.len();
+    // The stored cursor stops before the entry still being built: after a
+    // restart or a failed read its lines are read again, not lost.
+    let last_ts = match (last_ts, st.assembler.pending_since()) {
+        (Some(t), Some(p)) => Some(t.min(p - 1)),
+        (t, _) => t,
+    };
     let (store, conn, src, epoch) = (store.clone(), conn.to_string(), st.src.clone(), st.epoch);
     tokio::task::spawn_blocking(move || -> Result<()> {
         // The store was cleared during this read: the next poll starts over.
@@ -551,5 +559,95 @@ mod tests {
         let res = store.query("conn", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 10).unwrap();
         let long = res.entries.iter().find(|e| e.text.starts_with("INFO response")).unwrap();
         assert_eq!(long.text, body);
+    }
+
+    #[tokio::test]
+    async fn a_read_cut_off_by_its_deadline_leaves_the_unfinished_line_for_later() {
+        // A daemon that sends one line and the first record of a long one, then stalls.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let now = chrono::Utc::now().timestamp_micros();
+        let stamp = |ts: i64| chrono::DateTime::from_timestamp_micros(ts).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let (t1, t2) = (now - 60_000_000, now - 59_000_000);
+        let mut body = Vec::new();
+        for rec in [format!("{} INFO done\n", stamp(t1)), format!("{} INFO {}", stamp(t2), "y".repeat(16 * 1024))] {
+            body.extend_from_slice(&[1, 0, 0, 0]);
+            body.extend_from_slice(&(rec.len() as u32).to_be_bytes());
+            body.extend_from_slice(rec.as_bytes());
+        }
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(format!("{:x}\r\n", body.len()).as_bytes()).await.unwrap();
+            sock.write_all(&body).await.unwrap();
+            sock.write_all(b"\r\n").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let client = DockerClient::new(Endpoint::Tcp(addr));
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let src = source();
+        let mut st = SourceState {
+            assembler: Assembler::new(&src.service),
+            cursor: None,
+            last_read: None,
+            error: None,
+            tail: TAIL_MIN,
+            epoch: store.epoch(),
+            refill: false,
+            stored: None,
+            src,
+        };
+        let path = "/containers/c1/logs?stdout=1&stderr=1&timestamps=1";
+        let n = read_stream(&client, &store, "conn", &mut st, path, Duration::from_millis(500), now).await.unwrap();
+        assert_eq!(n, 1);
+        let res = store.query("conn", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 10).unwrap();
+        assert_eq!(res.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["INFO done"]);
+        // The next poll goes on right after the line that was read whole.
+        assert_eq!(st.cursor, Some(t1));
+    }
+
+    #[tokio::test]
+    async fn a_read_that_breaks_off_loses_no_line_and_stores_none_twice() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let now = chrono::Utc::now().timestamp_micros();
+        let served: Vec<(i64, String)> = (0..3000).map(|i| (now - 60_000_000 + i * 1000, format!("INFO line {i}"))).collect();
+        tokio::spawn(async move {
+            for round in 0.. {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.lines().next().unwrap().split(' ').nth(1).unwrap().to_string();
+                let body = frames(&served, &path);
+                // The first answer breaks off after 2500 lines, in the middle of the body.
+                let body = if round == 0 { body[..body.len() * 5 / 6].to_vec() } else { body };
+                let res = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                sock.write_all(res.as_bytes()).await.unwrap();
+                sock.write_all(format!("{:x}\r\n", body.len()).as_bytes()).await.unwrap();
+                sock.write_all(&body).await.unwrap();
+                if round == 0 {
+                    // Gone without ending the body.
+                    drop(sock);
+                    continue;
+                }
+                sock.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+                let _ = sock.shutdown().await;
+            }
+        });
+        let client = DockerClient::new(Endpoint::Tcp(addr));
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut c = Collector::new("conn", store.clone());
+        let r = c.poll(&client, vec![source()], RETENTION).await;
+        assert_eq!(r.errors.len(), 1, "{r:?}");
+        let first = stored(&store);
+        assert!((2000..3000).contains(&first), "{first}");
+        let r = c.poll(&client, vec![source()], RETENTION).await;
+        assert!(r.errors.is_empty(), "{r:?}");
+        // Each line once: none stored twice, and the one being built when the read broke off not lost.
+        assert_eq!(stored(&store), 3000);
     }
 }

@@ -86,6 +86,11 @@ impl Assembler {
         });
     }
 
+    /// When the entry still being built started (µs): its lines are read but not stored yet.
+    pub fn pending_since(&self) -> Option<i64> {
+        self.pending.as_ref().map(|p| p.first_ts)
+    }
+
     /// Emits the pending entry if nothing was added to it for a while.
     pub fn flush_if_idle(&mut self, now_us: i64, out: &mut Vec<LogEntry>) {
         if self.pending.as_ref().is_some_and(|p| now_us - p.last_ts > 2 * MAX_GAP_US) {

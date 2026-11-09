@@ -163,9 +163,11 @@ pre.trace .fr{color:var(--muted)}
 .row .svc{all:unset;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;border-radius:4px}
 .row .svc:hover{text-decoration:underline;text-underline-offset:2px}
 .row .svc:focus-visible{outline:2px solid var(--accent)}
-.row .msg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* The text gives way, the badges after it ("+N chars", "12 lines") always show. */
+.row .msg{display:flex;align-items:baseline;min-width:0;white-space:nowrap}
+.row .msg .mt{overflow:hidden;text-overflow:ellipsis;min-width:0}
 .row.open .msg{white-space:pre-wrap;word-break:break-word}
-.row .rep{display:inline-block;margin-left:8px;font-size:11px;padding:0 6px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted)}
+.row .rep{flex:none;display:inline-block;margin-left:8px;font-size:11px;padding:0 6px;border-radius:9px;background:var(--panel-2);border:1px solid var(--line);color:var(--muted)}
 .row .detail{grid-column:3/-1;padding:6px 0 8px;display:grid;gap:8px;cursor:default}
 .empty{padding:28px;text-align:center;color:var(--muted)}
 .foot-note{padding:10px 14px;color:var(--muted);font-size:12px;border-top:1px solid var(--line)}

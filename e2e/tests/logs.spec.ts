@@ -114,6 +114,14 @@ test('the stream pages through every stored line, down to the oldest', async ({ 
   const msgs = await rows.locator('.msg').allTextContents()
   const nums = msgs.map((m) => /Migrated row (\d+)/.exec(m)?.[1]).filter(Boolean).map(Number)
   expect(nums).toEqual(Array.from({ length: 1500 }, (_, i) => 1500 - i))
+
+  // Other filters start over at the newest page, and paging works again.
+  await page.getByRole('group', { name: 'Levels' }).getByRole('button', { name: /^Info/ }).click()
+  await expect(async () => {
+    await end.scrollIntoViewIfNeeded()
+    await expect(end).toContainText('These are all the stored lines', { timeout: 1000 })
+  }).toPass({ timeout: 30_000 })
+  await expect(rows).toHaveCount(1502)
 })
 
 test('a line longer than 16 KB is one entry, whole, and the row says it goes on', async ({ page }) => {
@@ -122,6 +130,9 @@ test('a line longer than 16 KB is one entry, whole, and the row says it goes on'
   const row = page.locator('.stream > .row', { hasText: 'Schema dump' })
   await expect(row).toHaveCount(1)
   await expect(row.locator('.rep')).toContainText(/\+[\d,.]+ chars/)
+  // The badge is on screen, not pushed out of the row by the long text.
+  const [badge, box] = [await row.locator('.rep').boundingBox(), await row.boundingBox()]
+  expect(badge!.x + badge!.width).toBeLessThanOrEqual(box!.x + box!.width)
   await row.click()
   await expect(row.locator('pre.trace')).toHaveText('Schema dump ' + 'x'.repeat(40000))
 })

@@ -50,7 +50,7 @@
   {#if service}
     <button class="svc" title="Show only {e.service}" onclick={() => onservice?.()}>{e.service}<span class="muted">.{e.replica}</span></button>
   {/if}
-  <span class="msg">{#if !open}{#each marks(head, terms) as m, i (i)}{#if m.m}<mark>{m.t}</mark>{:else}{m.t}{/if}{/each}{#if cut}<span class="rep" title="A long line: click to read all of it">+{cut.toLocaleString()} chars</span>{/if}{#if e.lines > 1}<span class="rep" title="Multi-line entry, reassembled per replica">{e.lines} lines</span>{/if}{/if}{#if n > 1}<span class="rep">+{n - 1} similar</span>{/if}</span>
+  <span class="msg">{#if !open}<span class="mt">{#each marks(head, terms) as m, i (i)}{#if m.m}<mark>{m.t}</mark>{:else}{m.t}{/if}{/each}</span>{#if cut}<span class="rep" title="A long line: click to read all of it">+{cut.toLocaleString()} chars</span>{/if}{#if e.lines > 1}<span class="rep" title="Multi-line entry, reassembled per replica">{e.lines} lines</span>{/if}{/if}{#if n > 1}<span class="rep">+{n - 1} similar</span>{/if}</span>
   {#if hot || open}<span class="ra">
     {#if service && onservice}<button class="ib" title="Only {e.service}" aria-label="Only {e.service}" onclick={() => onservice?.()}><Icon name="filter" size={13} /></button>{/if}
     {#if oncontext}<button class="ib" title="Show what this container printed 30 s before and after" aria-label="Show 30 seconds around it" onclick={() => oncontext?.()}><Icon name="clock" size={13} /></button>{/if}

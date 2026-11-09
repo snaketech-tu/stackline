@@ -3,7 +3,7 @@
   import { app, LEVELS, PRESETS, type Preset } from '../lib/state.svelte'
   import { api, fetchEvents, fetchLogs } from '../lib/api'
   import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
-  import { ago, bytes, firstLine, hhmm, hms, patternParts, plural, searchTerms } from '../lib/format'
+  import { ago, bytes, dateTime, firstLine, hhmm, hms, patternParts, plural, searchTerms } from '../lib/format'
   import type { DockerEvent, Entry, Group, Level, StoreStats } from '../lib/types'
   import { isCrash } from '../lib/events'
   import Histogram from '../components/Histogram.svelte'
@@ -39,9 +39,9 @@
     loading = true
     try {
       // Events are a side note: the lines show even when they cannot be read.
-      const [r, ev] = await Promise.all([fetchLogs(id, pages.headParams({ ...p, buckets: 60 })), fetchEvents(id, p).catch(() => [])])
-      if (mine !== seq) return
-      pages.takeHead(r)
+      const hp = pages.headParams({ ...p, buckets: 60 })
+      const [r, ev] = await Promise.all([fetchLogs(id, hp), fetchEvents(id, p).catch(() => [])])
+      if (mine !== seq || !pages.takeHead(r, hp)) return
       events = ev
       shown = { from: p.from, to: p.to }
       error = null
@@ -355,7 +355,7 @@
           {:else if pages.more}
             <span>The stream shows at most {LINES.max.toLocaleString()} lines. For older ones, drag across the graph to pick an earlier range, or download them.</span>
           {:else if L.preset === 'auto'}
-            <span class="muted">These are all the stored lines that match{#if last}, back to {hms(last.ts / 1000).slice(0, 8)}{/if}. Stackline keeps {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'} of logs, and reads a replica 6 hours back when it first sees it.</span>
+            <span class="muted">These are all the stored lines that match{#if last}, back to {app.now - last.ts / 1000 > 20 * 3600e3 ? dateTime(last.ts / 1000) : hms(last.ts / 1000).slice(0, 8)}{/if}. Stackline keeps {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'} of logs, and reads a replica 6 hours back when it first sees it.</span>
           {:else}
             <span class="muted">No older lines in this range, which starts at {hhmm(shown.from)}.</span>
             <button class="btn ghost sm" onclick={() => L.setPreset('auto')}>Show all stored lines</button>

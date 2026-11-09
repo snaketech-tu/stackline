@@ -97,7 +97,7 @@
     void app.snap?.fetchedAt
     if (!name) return
     const r = range(6 * 3600e3)
-    fetchLogs(app.activeId, { ...r, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })
+    fetchLogs(app.activeId, { ...r, open: true, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })
       .then((x) => {
         hist = x
         win = r
@@ -137,11 +137,11 @@
     const get = () => {
       const p = params()
       linesParams = p
-      fetchLogs(id, pages.headParams(p, first))
+      const hp = pages.headParams(p, first)
+      fetchLogs(id, hp)
         // A slow answer for filters that changed since must not replace the current one.
         .then((x) => {
-          if (mine !== linesSeq) return
-          pages.takeHead(x)
+          if (mine === linesSeq) pages.takeHead(x, hp)
         })
         .catch(() => {})
     }

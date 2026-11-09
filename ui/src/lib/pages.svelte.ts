@@ -27,6 +27,8 @@ export class LogPages {
   olderError = $state<string | null>(null)
   /** Bumped by `reset`, so answers for earlier filters are dropped. */
   private gen = 0
+  /** Filters changed and their first page has not come yet: older pages would start after the wrong line. */
+  private waiting = false
 
   /** Every line shown, newest first. */
   entries = $derived<Entry[]>(this.older.length ? [...(this.head?.result.entries ?? []), ...this.older] : (this.head?.result.entries ?? []))
@@ -38,6 +40,7 @@ export class LogPages {
   /** Back to the first page, for new filters. */
   reset() {
     this.gen++
+    this.waiting = true
     this.older = []
     this.olderMore = false
     this.loadingOlder = false
@@ -55,20 +58,30 @@ export class LogPages {
     return this.older.length ? { ...p, after: key(this.older[0]), limit: ABOVE_MAX } : { ...p, limit: first }
   }
 
-  /** Takes the answer of a refresh made with `headParams`. */
-  takeHead(r: LogResponse) {
+  /**
+   * Takes the answer of a refresh made with `p`, the parameters `headParams`
+   * gave. False when it no longer fits the lines shown: older pages came in
+   * (or went) while it was on its way, so its lines may not meet them. The
+   * next refresh asks again.
+   */
+  takeHead(r: LogResponse, p: LogParams): boolean {
+    const anchor = this.older.length ? key(this.older[0]) : undefined
+    if (p.after !== anchor) return false
+    this.waiting = false
     // So many new lines that they no longer meet the older pages: start over at the newest.
     if (this.older.length && r.result.more) {
       this.reset()
+      this.waiting = false
       r.result.entries = r.result.entries.slice(0, LINES.first)
     }
     this.head = keepEntries(this.head, r)
+    return true
   }
 
   /** Adds the next older page below the lines shown. True when it added lines. */
   async loadOlder(conn: string, p: LogParams, describe: (e: unknown) => string): Promise<boolean> {
     const last = this.entries[this.entries.length - 1]
-    if (!last || this.loadingOlder || !this.more || this.full || this.olderError) return false
+    if (!last || this.waiting || this.loadingOlder || !this.more || this.full || this.olderError) return false
     const gen = this.gen
     this.loadingOlder = true
     this.olderError = null
@@ -97,11 +110,14 @@ export class LogPages {
 /**
  * Calls `load` while the element is in view, or close to it: put at the end
  * of a stream, older lines come in as someone scrolls down to them. It goes
- * on as long as `load` adds lines and the end is still in view.
+ * on as long as `load` adds lines and the end is still in view, and looks
+ * again every second while it is, since `load` can be held back for a while
+ * (new filters whose first page has not come yet).
  */
 export function nearEnd(el: HTMLElement, load: () => Promise<boolean> | boolean) {
   let visible = false
   let running = false
+  let timer: ReturnType<typeof setInterval> | undefined
   async function run() {
     if (running) return
     running = true
@@ -115,7 +131,11 @@ export function nearEnd(el: HTMLElement, load: () => Promise<boolean> | boolean)
   const io = new IntersectionObserver(
     (list) => {
       visible = list.some((x) => x.isIntersecting)
-      if (visible) run()
+      clearInterval(timer)
+      if (visible) {
+        run()
+        timer = setInterval(() => !document.hidden && run(), 1000)
+      }
     },
     { rootMargin: '0px 0px 600px 0px' },
   )
@@ -125,6 +145,7 @@ export function nearEnd(el: HTMLElement, load: () => Promise<boolean> | boolean)
       load = next
     },
     destroy() {
+      clearInterval(timer)
       io.disconnect()
     },
   }
