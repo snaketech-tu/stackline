@@ -115,7 +115,7 @@
   }
 
   function keydown(e: KeyboardEvent) {
-    if (app.palette || app.help || e.ctrlKey || e.metaKey || e.altKey || app.awaitingGo()) return
+    if (app.palette || app.help || app.ask || e.ctrlKey || e.metaKey || e.altKey || app.awaitingGo()) return
     const el = document.activeElement as HTMLElement | null
     const tag = el?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
@@ -237,6 +237,7 @@
   <div class="rl-foot">
     <span>{shown.length === items.length ? `${items.length} ${items.length === 1 ? noun[0] : noun[1]}` : `${shown.length} of ${items.length} ${noun[1]}`}</span>
     <span class="spacer"></span>
-    <span class="hide-sm">Read-only: nothing here changes your containers</span>
+    {#if app.access.writable}<span class="hide-sm warn-t">Changes allowed: each one asks first</span>
+    {:else}<span class="hide-sm">Read-only: nothing here changes your containers</span>{/if}
   </div>
 </section>

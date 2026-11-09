@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use stackline::{ServeOptions, start, update};
 use stackline_core::config::Paths;
 
-/// A read-only dashboard for Docker Swarm and Compose stacks.
+/// A dashboard for Docker Swarm and Compose stacks, read-only unless you switch it off per connection.
 #[derive(Parser)]
 #[command(version, about)]
 struct Cli {
@@ -30,6 +30,10 @@ enum Command {
         /// Keep config and logs in this folder instead of the default locations.
         #[arg(long)]
         data_dir: Option<PathBuf>,
+        /// Never change anything, whatever a connection's read-only switch says.
+        /// The same as STACKLINE_READ_ONLY=1.
+        #[arg(long)]
+        read_only: bool,
     },
 }
 
@@ -43,10 +47,14 @@ async fn main() -> Result<()> {
     // file has been swapped and the new one must be started from this path.
     let exe = std::env::current_exe()?;
     let restarted = stackline_core::config::env_var("RESTARTED").is_some();
-    let (port, host, no_open, data_dir) = match cli.command {
-        Some(Command::Serve { port, host, no_open, data_dir }) => (port, host, no_open, data_dir),
-        None => (7070, IpAddr::from([127, 0, 0, 1]), false, None),
+    let (port, host, no_open, data_dir, read_only) = match cli.command {
+        Some(Command::Serve { port, host, no_open, data_dir, read_only }) => (port, host, no_open, data_dir, read_only),
+        None => (7070, IpAddr::from([127, 0, 0, 1]), false, None, false),
     };
+    // A restart after an update passes the same arguments, so this stays on.
+    if read_only {
+        stackline_core::runtime::force_read_only();
+    }
     let paths = data_dir.as_deref().map(Paths::in_dir).unwrap_or_else(Paths::default_paths);
     let server = start(ServeOptions { addr: SocketAddr::new(host, port), paths, desktop: false, installer: None, notifier: None }).await?;
     let url = server.url();

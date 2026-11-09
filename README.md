@@ -9,7 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/snaketech-tu/stackline)](https://github.com/snaketech-tu/stackline/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 
-**A read-only dashboard for Docker Swarm and Compose, with logs that keep stack traces together.**
+**A dashboard for Docker Swarm and Compose that is read-only until you say otherwise, with logs that keep stack traces together.**
 
 See which services need attention, inspect failed tasks, and investigate errors
 across replicas. Run Stackline on your computer and connect to Docker locally
@@ -101,7 +101,7 @@ the binary to `stackline` (`stackline.exe` on Windows) and putting it on your `P
 you can customize startup:
 
 ```text
-stackline serve [--port 7070] [--host 127.0.0.1] [--no-open] [--data-dir DIR]
+stackline serve [--port 7070] [--host 127.0.0.1] [--no-open] [--data-dir DIR] [--read-only]
 ```
 
 ## Connect a host
@@ -212,8 +212,16 @@ app uses system notifications; in a browser, allow notifications for the
 Stackline tab. Only the services whose logs are collected count toward the
 alert.
 
-Stackline is read-only toward Docker. It writes its own settings, cached logs,
-exports and installed updates on the computer where it runs.
+**Every connection starts read-only**: only reads reach Docker. Click
+**Read-only** in the top bar to allow changes on that connection. Stackline can
+then restart, stop and start a service's containers, and restart or scale a
+swarm service. It never creates or removes anything, and each change asks first
+and shows the `docker` command it amounts to. The server enforces this, not
+only the page. `stackline serve --read-only` (or `STACKLINE_READ_ONLY=1`) keeps
+every connection read-only, whatever was switched before.
+
+Stackline writes its own settings, cached logs, exports and installed updates
+on the computer where it runs.
 
 | Data | Linux | macOS | Windows |
 | --- | --- | --- | --- |

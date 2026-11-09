@@ -55,6 +55,10 @@
     }
     if (app.dock.tabs.length) out.push({ kind: 'Action', label: 'Close the log workspace', text: 'workspace dock close tabs', right: `${app.dock.tabs.length} tabs`, run: () => app.dock.closeAll() })
     out.push({ kind: 'Action', label: 'Show every key', text: 'help keys shortcuts', right: '?', run: () => (app.help = true) })
+    if (app.snap && !app.access.forced)
+      out.push(app.access.writable
+        ? { kind: 'Action', label: `Make ${app.active?.name} read-only again`, text: 'read-only readonly lock access', right: '', run: () => app.setWritable(false) }
+        : { kind: 'Action', label: `Allow changes on ${app.active?.name}`, text: 'read-only readonly unlock write edit access restart scale', right: '', run: () => app.setWritable(true) })
     for (const c of app.connections) {
       if (c.id !== app.activeId) out.push({ kind: 'Connect', label: `Switch to ${c.name}`, text: `connection switch ${c.name}`, right: c.kind === 'ssh' ? 'SSH' : 'Local', run: () => app.select(c.id) })
     }

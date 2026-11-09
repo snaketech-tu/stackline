@@ -21,6 +21,11 @@ pub struct AppConfig {
     /// Which services' logs are collected, per connection id. Missing means all.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collect: BTreeMap<String, Collect>,
+    /// Connections whose read-only mode was switched off, so Stackline may
+    /// restart, stop, start and scale their services. Every other connection,
+    /// new ones too, is read-only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub writable: Vec<String>,
 }
 
 /// The services of one connection whose logs Stackline reads and stores.
@@ -116,6 +121,7 @@ impl Default for AppConfig {
             settings: Settings::default(),
             pins: BTreeMap::new(),
             collect: BTreeMap::new(),
+            writable: Vec::new(),
         }
     }
 }

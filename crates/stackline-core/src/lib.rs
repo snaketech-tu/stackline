@@ -1,4 +1,5 @@
-//! Stackline core: a read-only view of Docker hosts, swarms and their logs.
+//! Stackline core: a view of Docker hosts, swarms and their logs. Read-only
+//! unless a connection's read-only mode is switched off; see `actions`.
 
 /// Compiles a regular expression once and caches it.
 macro_rules! regex {
@@ -10,6 +11,7 @@ macro_rules! regex {
     }};
 }
 
+pub mod actions;
 pub mod alerts;
 pub mod collector;
 pub mod config;

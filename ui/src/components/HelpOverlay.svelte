@@ -27,6 +27,13 @@
       ['s', 'Narrow every list to the stack'],
       ['/', 'Filter the list'],
     ]],
+    ['When changes are allowed', [
+      ['r', 'Restart the service or container'],
+      ['x', 'Stop it (Compose and lone containers)'],
+      ['u', 'Start it again'],
+      ['c', 'Scale a swarm service'],
+      ['Enter', 'Confirm in the dialog, which shows the docker command'],
+    ]],
     ['In the inspector', [
       ['[  ]', 'Previous and next service'],
     ]],
@@ -43,7 +50,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="pal-wrap" onclick={(e) => { if (e.target === e.currentTarget) app.help = false }}>
   <div class="pal help-ov" role="dialog" aria-modal="true" aria-label="Keys">
-    <div class="in"><b>Keys</b><span class="spacer"></span><span class="muted" style="font-size:12px">Stackline is read-only: no key changes your containers.</span><kbd>Esc</kbd></div>
+    <div class="in"><b>Keys</b><span class="spacer"></span><span class="muted" style="font-size:12px">{app.access.writable ? 'Changes are allowed here. Each one asks first.' : 'Read-only: no key changes your containers.'}</span><kbd>Esc</kbd></div>
     <div class="help-grid">
       {#each GROUPS as [title, keys] (title)}
         <section>

@@ -15,6 +15,7 @@
   import PinButton from './PinButton.svelte'
   import CollectSwitch from './CollectSwitch.svelte'
   import Spark from './Spark.svelte'
+  import { can, restart, scale, start, stop } from '../lib/changes'
 
   let { key, tab }: { key: string; tab: ServiceTab } = $props()
   let s = $derived(app.services.find((x) => x.key === key))
@@ -172,7 +173,7 @@
   }
   function keydown(e: KeyboardEvent) {
     const tag = (document.activeElement as HTMLElement | null)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || app.palette) return
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || app.palette || app.ask) return
     if (e.key === '[' || e.key === ']') step(e.key === ']' ? 1 : -1)
   }
 </script>
@@ -189,7 +190,7 @@
   {#snippet sub()}
     {#if s}
       {@const [cls] = svcState(s)}
-      <span class="pill {cls}">{s.running}/{s.desired}</span><span class="pill">{s.mode}</span><span class="kind">{s.kind}</span>
+      <span class="pill {cls}">{s.running}/{s.desired}</span><span class="pill">{s.mode}</span>{#if s.kind !== s.mode}<span class="kind">{s.kind}</span>{/if}
       {#if s.updatedAt}<span class="muted">updated {ago(s.updatedAt, app.now)}</span>{/if}
     {/if}
   {/snippet}
@@ -218,6 +219,15 @@
   {#if !s}
     <div class="empty">This service is no longer running on {app.active?.name}.</div>
   {:else if tab === 'overview'}
+    {#if app.access.writable}
+      <div class="changes" role="group" aria-label="Change this service">
+        <span class="muted"><Icon name="unlock" size={13} />Changes allowed</span>
+        {#if can.restart(s)}<button class="btn sm" onclick={() => restart(s!)}><Icon name="restart" size={13} />Restart</button>{/if}
+        {#if can.stop(s)}<button class="btn sm" onclick={() => stop(s!)}><Icon name="stop" size={13} />Stop</button>{/if}
+        {#if can.start(s)}<button class="btn sm" onclick={() => start(s!)}><Icon name="play" size={13} />Start</button>{/if}
+        {#if can.scale(s)}<button class="btn sm" onclick={() => scale(s!)}><Icon name="scale" size={13} />Scale</button>{/if}
+      </div>
+    {/if}
     {#if failing}
       {@const t = s.tasks.find((t) => t.state !== 'running')}
       {@const fails = s.tasks.reduce((a, t) => a + t.failures, 0)}

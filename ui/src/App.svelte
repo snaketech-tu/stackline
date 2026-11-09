@@ -23,6 +23,7 @@
   import Palette from './components/Palette.svelte'
   import HelpOverlay from './components/HelpOverlay.svelte'
   import Dock from './components/Dock.svelte'
+  import ConfirmChange from './components/ConfirmChange.svelte'
 
   onMount(() => {
     app.init()
@@ -50,7 +51,8 @@
     const base: [string, string][] = [[':', 'command'], ['/', 'filter']]
     if (isList) {
       const open = app.view === 'stacks' ? 'services' : app.view === 'services' ? 'tasks' : app.view === 'nodes' ? 'tasks' : 'service'
-      return [...base, ['↵', open], ['d', 'inspect'], ['l', 'logs'], ...(app.view === 'services' ? ([['p', 'pin']] as [string, string][]) : []), ['?', 'help']]
+      const change: [string, string][] = app.access.writable && (app.view === 'services' || app.view === 'tasks') ? [['r', 'restart']] : []
+      return [...base, ['↵', open], ['d', 'inspect'], ['l', 'logs'], ...change, ...(app.view === 'services' ? ([['p', 'pin']] as [string, string][]) : []), ['?', 'help']]
     }
     if (app.view === 'logs') return [[':', 'command'], ['/', 'search'], ['j k', 'move'], ['f', 'fill window'], ['?', 'help']]
     return [[':', 'command'], ['g s', 'services'], ['g l', 'logs'], ['?', 'help']]
@@ -72,6 +74,7 @@
       else history.forward()
       return
     }
+    if (app.ask) return
     if (e.key === 'Escape') {
       if (app.palette) app.palette = false
       else if (app.help) app.help = false
@@ -127,7 +130,13 @@
       <button class="sq bordered" onclick={() => app.cycleTheme()} title="Theme: {THEME_NAME[app.theme]}. Click to change." aria-label="Theme: {THEME_NAME[app.theme]}">
         <Icon name={THEME_ICON[app.theme]} size={15} />
       </button>
-      <span class="ro-badge" title="Only GET calls reach the Docker API. Nothing in Stackline can change your containers."><Icon name="lock" size={13} /><span class="hide-sm">Read-only</span></span>
+      {#if needsConn && app.snap}
+        <button class="ro-badge" class:open={app.access.writable} class:forced={app.access.forced} role="switch" aria-checked={!app.access.writable}
+          onclick={() => app.setWritable(!app.access.writable)}
+          title={app.access.forced ? 'Stackline was started with --read-only: nothing can be changed.' : app.access.writable ? `Changes are allowed on ${app.active?.name}. Click to make it read-only again.` : `Read-only: only reads reach Docker on ${app.active?.name}. Click to allow restarts, stops, starts and scaling.`}>
+          <Icon name={app.access.writable ? 'unlock' : 'lock'} size={13} /><span class="hide-sm">{app.access.writable ? 'Changes allowed' : 'Read-only'}</span>
+        </button>
+      {/if}
       <button class="sq bordered help-btn" onclick={() => (app.help = true)} title="Keys and commands (?)" aria-label="Keys and commands">?</button>
     </header>
     <div class="area">
@@ -188,5 +197,6 @@
 
 {#if app.palette}<Palette />{/if}
 {#if app.help}<HelpOverlay />{/if}
+{#if app.ask}{#key app.ask}<ConfirmChange ask={app.ask} />{/key}{/if}
 
 {#if app.toast}<div class="toast" class:err={app.toast.kind === 'err'} role="status">{app.toast.text}</div>{/if}

@@ -7,6 +7,7 @@
   import { taskPill } from '../lib/health'
   import type { ServiceRef, Task } from '../lib/types'
   import ResourceList, { type Act, type Col, type Tab } from '../components/ResourceList.svelte'
+  import { taskActs } from '../lib/changes'
 
   type Row = { s: ServiceRef; t: Task; key: string; name: string; pill: [string, string] }
 
@@ -45,11 +46,12 @@
     { id: 'attention', label: 'Needs attention', match: (r) => r.pill[0] === 'err' || r.pill[0] === 'warn' },
     { id: 'running', label: 'Running', match: (r) => r.t.state === 'running' },
   ]
-  const actions: Act<Row>[] = [
+  let actions = $derived<Act<Row>[]>([
+    ...taskActs<Row>(items, (r) => r),
     { key: 'l', label: 'Logs', icon: 'logs', run: (r) => app.dock.open(r.s.fullName, `${r.s.fullName} #${r.t.slot}`, `replica:${r.t.slot}`) },
     { key: 'n', label: 'Node', run: (r) => app.drill('tasks', { node: r.t.node }), when: () => !byNode },
     { key: 'o', label: 'Logs page', run: (r) => { app.showLogs([r.s.fullName]); app.logs.q = `replica:${r.t.slot}` } },
-  ]
+  ])
   const match = (r: Row, q: string) =>
     r.name.toLowerCase().includes(q) || r.s.stack.toLowerCase().includes(q) || r.t.node.toLowerCase().includes(q) || r.s.image.toLowerCase().includes(q) || r.t.state.includes(q)
   let inspecting = $derived(app.drawer?.kind === 'service' ? app.drawer.key : null)

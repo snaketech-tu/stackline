@@ -92,6 +92,26 @@ impl Runtime {
         Ok(Some(crate::details::fetch(&client, svc, kind).await?))
     }
 
+    /// Makes a change (restart, stop, start, scale). The caller checks that the
+    /// connection is not read-only. Returns what was done and the matching command.
+    pub async fn act(&self, req: &crate::actions::Request) -> Result<crate::actions::Plan> {
+        let snap = self.snapshot().ok_or_else(|| anyhow::anyhow!("Not connected yet."))?;
+        let (svc, kind) = snap
+            .stacks
+            .iter()
+            .filter(|st| req.stack.as_ref().is_none_or(|n| &st.name == n))
+            .find_map(|st| st.services.iter().find(|s| s.full_name == req.service).map(|s| (s, st.kind)))
+            .ok_or_else(|| anyhow::anyhow!("{} is not running here.", req.service))?;
+        let plan = crate::actions::plan(req, svc, kind)?;
+        if req.dry {
+            return Ok(plan);
+        }
+        let client = self.client().await?;
+        tracing::info!(connection = %self.cfg.name, command = %plan.command, "changing a service");
+        crate::actions::run(&client, &plan).await?;
+        Ok(plan)
+    }
+
     /// Returns a working client, (re)opening the SSH tunnel when needed.
     async fn client(&self) -> Result<DockerClient> {
         let mut guard = self.client.lock().await;
@@ -198,6 +218,28 @@ fn explain(msg: &str) -> String {
     }
 }
 
+/// Whether changes are allowed on a connection.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    pub writable: bool,
+    /// Read-only for every connection, set when Stackline was started.
+    pub forced: bool,
+}
+
+static FORCE_READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every connection read-only for as long as Stackline runs (`--read-only`).
+pub fn force_read_only() {
+    FORCE_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `--read-only` or `STACKLINE_READ_ONLY=1`: nothing can be changed.
+pub fn read_only_forced() -> bool {
+    FORCE_READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+        || crate::config::env_var("READ_ONLY").is_some_and(|v| !matches!(v.as_str(), "" | "0" | "false" | "no"))
+}
+
 /// Owns configuration, the log store and all opened connections.
 pub struct Manager {
     paths: Paths,
@@ -237,6 +279,27 @@ impl Manager {
 
     pub fn config(&self) -> AppConfig {
         self.config.read().unwrap().clone()
+    }
+
+    /// Whether a connection may be changed, and whether read-only is forced
+    /// for every connection (`--read-only` or `STACKLINE_READ_ONLY`).
+    pub fn access(&self, id: &str) -> Access {
+        let forced = read_only_forced();
+        Access { writable: !forced && self.config.read().unwrap().writable.iter().any(|w| w == id), forced }
+    }
+
+    /// Switches a connection's read-only mode off (`writable`) or on.
+    pub fn set_writable(&self, id: &str, writable: bool) -> Result<Access> {
+        if writable && read_only_forced() {
+            anyhow::bail!("Stackline was started read-only, so no connection can be changed.");
+        }
+        self.update_config(|c| {
+            c.writable.retain(|w| w != id);
+            if writable {
+                c.writable.push(id.to_string());
+            }
+        })?;
+        Ok(self.access(id))
     }
 
     pub fn store_path(&self) -> &std::path::Path {

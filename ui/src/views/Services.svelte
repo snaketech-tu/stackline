@@ -9,6 +9,7 @@
   import PinButton from '../components/PinButton.svelte'
   import CollectSwitch from '../components/CollectSwitch.svelte'
   import Icon from '../components/Icon.svelte'
+  import { serviceActs } from '../lib/changes'
 
   const L = app.lists.services
   /** A stack drilled into; otherwise the stack picker narrows the list. */
@@ -36,12 +37,13 @@
     { id: 'attention', label: 'Needs attention', match: (s) => svcProblem(s) },
     { id: 'pinned', label: 'Pinned', match: (s) => app.isPinned(s.key) },
   ]
-  const actions: Act<ServiceRef>[] = [
+  let actions = $derived<Act<ServiceRef>[]>([
+    ...serviceActs<ServiceRef>(items, (s) => s),
     { key: 'l', label: 'Logs', icon: 'logs', run: (s) => app.dock.open(s.fullName, s.fullName) },
     { key: 'e', label: 'Errors', run: (s) => app.openService(s.key, 'errors') },
     { key: 'o', label: 'Logs page', run: (s) => app.showLogs([s.fullName]) },
     { key: 'p', label: 'Pin', run: (s) => app.togglePin(s.key), hidden: true },
-  ]
+  ])
   const match = (s: ServiceRef, q: string) =>
     s.name.toLowerCase().includes(q) || s.image.toLowerCase().includes(q) || s.stack.toLowerCase().includes(q) || s.tasks.some((t) => t.node.toLowerCase().includes(q))
 

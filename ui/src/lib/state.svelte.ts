@@ -9,7 +9,7 @@ import { load, save } from './storage'
 import { DockState } from './dock.svelte'
 import { newLists, type ListView } from './lists.svelte'
 import type {
-  Alert, AlertsResponse, Collect, ConnState, Connection, Deploy, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  Access, ActionRequest, Alert, AlertsResponse, Collect, ConnState, Connection, Deploy, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
 } from './types'
 
@@ -219,6 +219,21 @@ class LogsState extends LogFilters {
   }
 }
 
+/** A change waiting for a yes. `run` gets the number typed when the dialog asks for replicas. */
+export interface Ask {
+  title: string
+  text: string
+  /** The docker command it amounts to. */
+  command?: string
+  confirm: string
+  danger?: boolean
+  /** Asks for a number of replicas, starting at this one. */
+  replicas?: number
+  /** The service a scale is for, so the command can follow the typed number. */
+  scaleOf?: string
+  run: (replicas?: number) => Promise<void>
+}
+
 class AppState {
   meta = $state<Meta | null>(null)
   connections = $state<Connection[]>([])
@@ -229,6 +244,10 @@ class AppState {
   pins = $state<string[]>([])
   /** Which services of the active connection have their logs collected. */
   collect = $state<Collect>({ only: false, services: [] })
+  /** Whether the active connection allows changes. Read-only until someone switches it off. */
+  access = $state<Access>({ writable: false, forced: false })
+  /** A change waiting for a yes in the confirm dialog. */
+  ask = $state<Ask | null>(null)
   errors = $state.raw<ErrorSummary | null>(null)
   /** Deploys of the last 24 hours, newest first, with the errors new since each. */
   deploys = $state.raw<Deploy[]>([])
@@ -525,6 +544,8 @@ class AppState {
     this.errors = null
     this.pins = []
     this.collect = { only: false, services: [] }
+    this.access = { writable: false, forced: false }
+    this.ask = null
     this.drawer = null
     this.logs.reset()
     this.logs.restoreSources(id)
@@ -551,6 +572,7 @@ class AppState {
       if (res.snapshot) this.snap = res.snapshot
       this.pins = res.pins
       if (!this.#collectBusy) this.collect = res.collect ?? { only: false, services: [] }
+      if (!this.#accessBusy) this.access = res.access ?? { writable: false, forced: false }
       if (errors) this.errors = errors
       if (deploys) this.deploys = deploys
       this.fatal = null
@@ -594,6 +616,65 @@ class AppState {
   }
 
   #collectBusy = 0
+  #accessBusy = 0
+
+  /** Switches read-only mode of the active connection. Switching it off asks first. */
+  setWritable(on: boolean) {
+    if (this.access.forced) {
+      this.notify('Stackline was started with --read-only, so nothing can be changed. Start it without the flag to allow changes.', 'err')
+      return
+    }
+    const name = this.active?.name ?? 'this connection'
+    const send = async () => {
+      this.#accessBusy++
+      try {
+        this.access = await put<Access>(`/c/${encodeURIComponent(this.activeId)}/access`, { writable: on })
+        this.notify(on ? `Changes are allowed on ${name}. Each one still asks first.` : `${name} is read-only again.`)
+      } finally {
+        this.#accessBusy--
+      }
+    }
+    if (!on) {
+      send().catch((e) => this.notify(this.describe(e), 'err'))
+      return
+    }
+    this.ask = {
+      title: `Allow changes on ${name}?`,
+      text: 'Stackline can then restart, stop, start and scale services here. It never creates or removes anything, and every change asks first and shows the docker command it runs. This stays on for this connection until you switch it back.',
+      confirm: 'Allow changes',
+      run: send,
+    }
+  }
+
+  /** Asks to make a change, showing the docker command it runs, and makes it on a yes. */
+  async act(req: ActionRequest, title: string) {
+    if (!this.access.writable) return
+    const conn = this.activeId
+    const path = `/c/${encodeURIComponent(conn)}/action`
+    let command: string
+    try {
+      if (req.action === 'scale') command = ''
+      else command = (await post<{ command: string }>(path, { ...req, dry: true })).command
+    } catch (e) {
+      this.notify(this.describe(e), 'err')
+      return
+    }
+    if (conn !== this.activeId) return
+    this.ask = {
+      title,
+      text: req.action === 'stop' ? 'The containers stay stopped until someone starts them again.' : req.action === 'scale' ? 'Swarm starts or removes tasks until this many run. 0 stops the service.' : '',
+      command,
+      replicas: req.action === 'scale' ? (req.replicas ?? 1) : undefined,
+      scaleOf: req.action === 'scale' ? req.service : undefined,
+      confirm: req.action === 'restart' ? 'Restart' : req.action === 'stop' ? 'Stop' : req.action === 'start' ? 'Start' : 'Scale',
+      danger: req.action === 'stop',
+      run: async (n) => {
+        const r = await post<{ done: string }>(path, { ...req, replicas: n ?? req.replicas })
+        this.notify(r.done)
+        if (conn === this.activeId) this.poll()
+      },
+    }
+  }
 
   async saveCollect(next: Collect) {
     const before = this.collect
