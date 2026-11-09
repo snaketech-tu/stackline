@@ -37,6 +37,13 @@ services:
         sleep 8
         psql -h postgres -U postgres -c "CREATE TABLE IF NOT EXISTS users (email text UNIQUE)" -c "INSERT INTO users VALUES ('a@example.com') ON CONFLICT DO NOTHING"
         while true; do psql -h postgres -U postgres -c "INSERT INTO users VALUES ('a@example.com')" >/dev/null 2>&1; sleep 9; done
+  # Runs once: a 40 KB line (Docker stores it as three records), then 1500
+  # short lines, so the stream has to page and the long line has to be joined.
   migrate:
     image: alpine:3.20
-    command: ["/bin/sh", "-c", "echo 'Applied 3 migrations'"]
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        printf 'Schema dump %s\n' "$$(head -c 40000 /dev/zero | tr '\0' x)"
+        i=1; while [ $$i -le 1500 ]; do echo "Migrated row $$i"; i=$$((i + 1)); done
+        echo 'Applied 3 migrations'

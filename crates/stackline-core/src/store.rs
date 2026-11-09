@@ -165,6 +165,32 @@ pub struct LogFilter {
     pub text: Vec<String>,
     /// Every level was switched off: match nothing.
     pub no_levels: bool,
+    /// The range ends now: lines stamped after `to` count too. The remote
+    /// host's clock can be ahead of this computer's, and its newest lines
+    /// would otherwise be left out until this clock caught up.
+    pub open_end: bool,
+}
+
+/// Where a page of lines starts: lines older (`Before`) or newer (`After`)
+/// than this line, by (ts, id) as the stream is ordered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Page {
+    Before(i64, i64),
+    After(i64, i64),
+}
+
+impl Page {
+    /// Reads `before=<ts>:<id>` or `after=<ts>:<id>`.
+    pub fn parse(before: Option<&str>, after: Option<&str>) -> Option<Page> {
+        let key = |v: &str| {
+            let (ts, id) = v.split_once(':')?;
+            Some((ts.trim().parse().ok()?, id.trim().parse().ok()?))
+        };
+        if let Some((ts, id)) = before.and_then(key) {
+            return Some(Page::Before(ts, id));
+        }
+        after.and_then(key).map(|(ts, id)| Page::After(ts, id))
+    }
 }
 
 impl LogFilter {
@@ -201,6 +227,8 @@ impl LogFilter {
     /// The same filter on another time column: `minute` of the per-minute counts.
     fn where_clause_at(&self, conn: &str, with_levels: bool, time: &str, from: i64, to: i64) -> (String, Vec<Sql>) {
         let mut w = vec!["conn = ?".to_string(), format!("{time} >= ?"), format!("{time} < ?")];
+        // An open range keeps no upper bound where it ends.
+        let to = if self.open_end && to >= self.to { i64::MAX } else { to };
         let mut p: Vec<Sql> = vec![Sql::Text(conn.into()), Sql::Integer(from), Sql::Integer(to)];
         let any_of = |col: &str, vals: &[String], like: bool, w: &mut Vec<String>, p: &mut Vec<Sql>| {
             if vals.is_empty() {
@@ -384,6 +412,10 @@ pub struct QueryResult {
     pub histogram: Vec<Bucket>,
     pub groups: Vec<Group>,
     pub entries: Vec<EntryOut>,
+    /// More lines match beyond `entries` (older ones, or for an `After` page
+    /// lines between it and the newest). Counted, unlike `total`, from the
+    /// lines themselves, so a "Show more" is never missing.
+    pub more: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -737,9 +769,14 @@ impl Store {
     }
 
     pub fn query(&self, conn: &str, f: &LogFilter, buckets: usize, limit: usize) -> Result<QueryResult> {
+        self.query_page(conn, f, buckets, limit, None)
+    }
+
+    /// Like [`Store::query`], with the lines of one page: older or newer than a line.
+    pub fn query_page(&self, conn: &str, f: &LogFilter, buckets: usize, limit: usize, page: Option<Page>) -> Result<QueryResult> {
         let since = self.minutes_since.load(std::sync::atomic::Ordering::Relaxed);
         let indexed = self.service_index.load(std::sync::atomic::Ordering::Relaxed);
-        self.read(|db| query(db, conn, f, buckets, limit, since, indexed))
+        self.read(|db| query(db, conn, f, buckets, limit, since, indexed, page))
     }
 
     pub fn error_summary(&self, conn: &str, now: i64) -> Result<ErrorSummary> {
@@ -1024,6 +1061,7 @@ impl Store {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn query(
     db: &Connection,
     conn: &str,
@@ -1032,8 +1070,12 @@ fn query(
     limit: usize,
     minutes_since: i64,
     indexed: bool,
+    page: Option<Page>,
 ) -> Result<QueryResult> {
     let buckets = buckets.clamp(1, 500) as i64;
+    // A page of older lines is only lines: the counts, the graph and the
+    // groups are those of the first page, which the caller has already.
+    let lines_only = matches!(page, Some(Page::Before(..)));
     let span = (f.to - f.from).max(1);
     // Picked stacks become their services, so the service index finds them.
     let resolved;
@@ -1071,10 +1113,11 @@ fn query(
             *bk.get_mut(level) += n;
         }
     };
-    let countable = f.text.is_empty() && f.fps.is_empty() && f.nodes.is_empty() && f.replicas.is_empty() && f.sources.is_empty();
+    let countable =
+        !lines_only && f.text.is_empty() && f.fps.is_empty() && f.nodes.is_empty() && f.replicas.is_empty() && f.sources.is_empty();
     let lo = (f.from.div_euclid(MINUTE) + (f.from.rem_euclid(MINUTE) != 0) as i64).max(minutes_since.div_euclid(MINUTE));
     let hi = f.to.div_euclid(MINUTE);
-    let mut raw = vec![(f.from, f.to)];
+    let mut raw = if lines_only { vec![] } else { vec![(f.from, f.to)] };
     if countable && hi - lo >= 30 {
         raw = vec![(f.from, f.from.max(lo * MINUTE)), (f.to.min(hi * MINUTE), f.to)];
         let (mut w, p) = f.where_clause_at(conn, false, "minute", lo, hi);
@@ -1115,7 +1158,8 @@ fn query(
     }
     let mut by_fp: HashMap<String, Agg> = HashMap::new();
     let mut st = db.prepare(&format!(
-        "SELECT fp, level, ts, exc, service, node, source, id FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3"
+        "SELECT fp, level, ts, exc, service, node, source, id FROM entries WHERE {w} AND fp IS NOT NULL AND level >= 3{}",
+        if lines_only { " AND 0" } else { "" }
     ))?;
     let mut rows = st.query(params_from_iter(p.iter()))?;
     while let Some(r) = rows.next()? {
@@ -1190,6 +1234,7 @@ fn query(
     // The newest lines. With picked services each one walks its own part of
     // the service index, newest first, and the results are merged: a quiet
     // service would otherwise mean reading the whole range.
+    // One line more than asked for says whether there are more.
     let limit = limit.clamp(1, 5000);
     let per_service = indexed && f.pick_stacks.is_empty() && (1..=50).contains(&f.exact_services.len());
     let parts: Vec<(String, Vec<Sql>)> = if per_service {
@@ -1198,19 +1243,33 @@ fn query(
         vec![(w, p)]
     };
     let mut entries = Vec::new();
-    for (w, p) in parts {
+    for (mut w, mut p) in parts {
+        // The (ts, id) order of the stream; `ts` alone first, so the index finds the start.
+        match page {
+            Some(Page::Before(ts, id)) => {
+                w.push_str(" AND ts <= ? AND (ts < ? OR id < ?)");
+                p.extend([Sql::Integer(ts), Sql::Integer(ts), Sql::Integer(id)]);
+            }
+            Some(Page::After(ts, id)) => {
+                w.push_str(" AND ts >= ? AND (ts > ? OR id > ?)");
+                p.extend([Sql::Integer(ts), Sql::Integer(ts), Sql::Integer(id)]);
+            }
+            None => {}
+        }
         let mut st = db.prepare_cached(&format!(
             "SELECT id, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw
-             FROM entries WHERE {w} ORDER BY ts DESC, id DESC LIMIT {limit}"
+             FROM entries WHERE {w} ORDER BY ts DESC, id DESC LIMIT {}",
+            limit + 1
         ))?;
         entries.extend(st.query_map(params_from_iter(p.iter()), row_to_entry)?.collect::<rusqlite::Result<Vec<_>>>()?);
     }
     if per_service && f.exact_services.len() > 1 {
         entries.sort_by(|a, b| b.ts.cmp(&a.ts).then(b.id.cmp(&a.id)));
-        entries.truncate(limit);
     }
+    let more = entries.len() > limit;
+    entries.truncate(limit);
 
-    Ok(QueryResult { total, levels, histogram, groups, entries })
+    Ok(QueryResult { total, levels, histogram, groups, entries, more })
 }
 
 /// The services with stored lines in these stacks, found by skipping through
@@ -1463,6 +1522,64 @@ mod tests {
         }
         a.flush(&mut out);
         out
+    }
+
+    #[test]
+    fn pages_walk_the_whole_range_without_gaps_or_repeats() {
+        let store = Store::open_in_memory().unwrap();
+        let base = 1_700_000_000_000_000i64;
+        // Two services, and lines that share a microsecond, as a stack trace does.
+        for (svc, off) in [("shop_app", 0), ("shop_db", 3)] {
+            let lines: Vec<(i64, String)> =
+                (0..1234).map(|i| (base + (i / 4) * 1000 + off, format!("2026-10-27 INFO {svc} line {i}"))).collect();
+            let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            // One entry per line: the assembler would join same-time lines.
+            let mut es = vec![];
+            for (t, l) in refs {
+                es.extend(entries(&[(t, l)]));
+            }
+            store.insert("c1", &src(svc, "1"), &es).unwrap();
+        }
+        for picked in [vec![], vec!["shop_app".to_string(), "shop_db".to_string()]] {
+            let f = LogFilter { from: base, to: base + 1_000_000_000, exact_services: picked.clone(), ..Default::default() };
+            let first = store.query("c1", &f, 10, 300).unwrap();
+            assert_eq!((first.entries.len(), first.more, first.total), (300, true, 2468));
+            let mut seen: Vec<(i64, i64)> = first.entries.iter().map(|e| (e.ts, e.id)).collect();
+            let mut more = first.more;
+            while more {
+                let &(ts, id) = seen.last().unwrap();
+                let r = store.query_page("c1", &f, 10, 500, Some(Page::Before(ts, id))).unwrap();
+                assert!(r.groups.is_empty() && r.total == 0, "an older page carries only lines");
+                seen.extend(r.entries.iter().map(|e| (e.ts, e.id)));
+                more = r.more;
+            }
+            assert_eq!(seen.len(), 2468, "{picked:?}");
+            assert!(seen.windows(2).all(|w| w[0] > w[1]), "newest first, each line once");
+
+            // The newest lines above a line: all of them, or `more` when they do not fit.
+            let (ts, id) = seen[700];
+            let r = store.query_page("c1", &f, 10, 5000, Some(Page::After(ts, id))).unwrap();
+            assert_eq!((r.entries.len(), r.more), (700, false));
+            let r = store.query_page("c1", &f, 10, 100, Some(Page::After(ts, id))).unwrap();
+            assert_eq!((r.entries.len(), r.more), (100, true));
+        }
+        // The last page says there is nothing more.
+        let f = LogFilter { from: base, to: base + 1_000_000_000, ..Default::default() };
+        assert!(!store.query("c1", &f, 10, 5000).unwrap().more);
+    }
+
+    #[test]
+    fn an_open_range_keeps_lines_stamped_after_its_end() {
+        let store = Store::open_in_memory().unwrap();
+        let now = 1_700_000_000_000_000i64;
+        // The host's clock is 2 minutes ahead of this one.
+        store.insert("c1", &src("shop_app", "1"), &entries(&[(now + 120_000_000, "2026-10-27 ERROR from the future")])).unwrap();
+        let mut f = LogFilter { from: now - 3_600_000_000, to: now, ..Default::default() };
+        assert_eq!(store.query("c1", &f, 10, 10).unwrap().entries.len(), 0);
+        f.open_end = true;
+        let r = store.query("c1", &f, 10, 10).unwrap();
+        assert_eq!((r.entries.len(), r.total, r.levels.error, r.groups.len()), (1, 1, 1, 1));
+        assert_eq!(r.histogram.last().unwrap().error, 1, "counted in the last bucket");
     }
 
     #[test]
@@ -1954,8 +2071,8 @@ mod tests {
             ];
             for f in &filters {
                 // 48 buckets of 5 minutes: bucket edges fall on whole minutes.
-                let fast = query(&db, "c1", f, 48, 300, 0, true).unwrap();
-                let slow = query(&db, "c1", f, 48, 300, i64::MAX, false).unwrap();
+                let fast = query(&db, "c1", f, 48, 300, 0, true, None).unwrap();
+                let slow = query(&db, "c1", f, 48, 300, i64::MAX, false, None).unwrap();
                 assert_eq!(fast.total, slow.total, "{label}: {f:?}");
                 assert_eq!(serde_json::to_value(&fast.levels).unwrap(), serde_json::to_value(&slow.levels).unwrap(), "{label}: {f:?}");
                 if f.from % MINUTE == 0 {
@@ -2027,7 +2144,7 @@ mod tests {
         let r = store.query("c1", &f, 48, 10).unwrap();
         assert_eq!(r.total, 2000);
         assert_eq!((r.levels.info, r.levels.warn, r.levels.error), (668, 666, 666));
-        let slow = query(&store.db.lock().unwrap(), "c1", &f, 48, 10, i64::MAX, false).unwrap();
+        let slow = query(&store.db.lock().unwrap(), "c1", &f, 48, 10, i64::MAX, false, None).unwrap();
         assert_eq!(serde_json::to_value(&r.histogram).unwrap(), serde_json::to_value(&slow.histogram).unwrap());
         // Reopening keeps where the counts start.
         drop(store);

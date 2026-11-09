@@ -63,6 +63,8 @@ export interface Entry {
 }
 export interface LogResult {
   total: number; levels: Record<Level, number>; histogram: Bucket[]; groups: Group[]; entries: Entry[]
+  /** More lines match beyond `entries`. */
+  more: boolean
 }
 export interface LogResponse { result: LogResult; syncedAt: number | null; logErrors: string[] }
 export interface TestStep { label: string; ok: boolean; detail: string | null; ms: number }

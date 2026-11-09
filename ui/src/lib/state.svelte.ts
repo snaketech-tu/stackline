@@ -54,15 +54,10 @@ export function save(key: string, v: string) {
 /** The pin key of a service: `stack/service`. */
 export const pinKey = (s: { stack: string; name: string }) => `${s.stack}/${s.name}`
 
-/** How many lines a stream shows at first, how many "Show more" adds, and the most the store returns at once. */
-export const LINES = { first: 300, step: 500, max: 5000 }
-
-/** What every log stream has: the levels shown, the open entries and how many lines are listed. */
+/** What every log stream has: the levels shown and the open entries. */
 export class LogFilters {
   levels = new SvelteSet<Level>(LEVELS)
   openRows = new SvelteSet<number>()
-  /** How many of the newest lines the stream shows. "Show more" raises it. */
-  limit = $state(LINES.first)
 
   /** Click shows only that level; with `add` (Shift-click) it is switched on or off. */
   pickLevel(l: Level, add: boolean) {
@@ -91,17 +86,11 @@ export class LogFilters {
     else this.openRows.add(id)
   }
 
-  /** Shows more of the newest lines, up to what the store returns at once. */
-  more() {
-    this.limit = Math.min(LINES.max, this.limit + LINES.step)
-  }
-
-  /** Back to every level, nothing open, the first lines only. */
+  /** Back to every level, nothing open. */
   resetFilters() {
     this.levels.clear()
     this.allLevels()
     this.openRows.clear()
-    this.limit = LINES.first
   }
 }
 
@@ -143,6 +132,7 @@ class LogsState extends LogFilters {
   params(): LogParams {
     const [from, to] = this.window()
     const p: LogParams = { from: Math.floor(from), to: Math.ceil(to), levels: [...this.levels].join(',') }
+    if (this.preset) p.open = true
     const q = [this.q.trim(), this.group ? `fp:${this.group}` : ''].filter(Boolean).join(' ')
     if (q) p.q = q
     const stacks = [...this.sources].filter((s) => s.startsWith('stack:')).map((s) => s.slice(6))

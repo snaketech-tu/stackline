@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test'
 import { open } from './helpers'
 
-// `migrate` prints one line and exits with 0 right after the demo starts.
+// `migrate` prints its lines and exits with 0 right after the demo starts.
 test('a service panel lists when its containers stopped, and opens the lines before', async ({ page }) => {
   await open(page, 'stacks')
   await page.getByRole('row', { name: /demo_migrate/ }).click()
