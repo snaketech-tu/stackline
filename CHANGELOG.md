@@ -3,7 +3,7 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
-## Unreleased
+## 0.5.1
 
 Logs no longer end without warning: the stream pages through every stored line, and long lines are stored whole.
 
