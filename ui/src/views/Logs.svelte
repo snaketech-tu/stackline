@@ -1,9 +1,10 @@
 <script lang="ts">
-  import { onDestroy } from 'svelte'
-  import { app, LEVELS, LINES, PRESETS, type Preset } from '../lib/state.svelte'
-  import { api, fetchEvents, fetchLogs, keepEntries } from '../lib/api'
-  import { ago, bytes, firstLine, hhmm, patternParts, plural, searchTerms } from '../lib/format'
-  import type { DockerEvent, Entry, Group, Level, LogResponse, StoreStats } from '../lib/types'
+  import { onDestroy, untrack } from 'svelte'
+  import { app, LEVELS, PRESETS, type Preset } from '../lib/state.svelte'
+  import { api, fetchEvents, fetchLogs } from '../lib/api'
+  import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
+  import { ago, bytes, dateTime, firstLine, hhmm, hms, patternParts, plural, searchTerms } from '../lib/format'
+  import type { DockerEvent, Entry, Group, Level, StoreStats } from '../lib/types'
   import { isCrash } from '../lib/events'
   import Histogram from '../components/Histogram.svelte'
   import Icon from '../components/Icon.svelte'
@@ -16,8 +17,9 @@
   const COL: Record<Level, string> = { ERROR: 'var(--err)', WARN: 'var(--warn)', INFO: 'var(--info)', DEBUG: 'var(--dbg)' }
   const RANGES: Preset[] = ['auto', ...(Object.keys(PRESETS) as Preset[])]
 
-  // Replaced as a whole on every load, so it needs no deep reactivity.
-  let res = $state.raw<LogResponse | null>(null)
+  // The newest page is replaced as a whole on every load; older pages are added by "Show more".
+  const pages = new LogPages()
+  let res = $derived(pages.head)
   let events = $state.raw<DockerEvent[]>([])
   let shown = $state({ from: 0, to: 0 })
   let loading = $state(false)
@@ -37,9 +39,9 @@
     loading = true
     try {
       // Events are a side note: the lines show even when they cannot be read.
-      const [r, ev] = await Promise.all([fetchLogs(id, { ...p, buckets: 60, limit: L.limit }), fetchEvents(id, p).catch(() => [])])
-      if (mine !== seq) return
-      res = keepEntries(res, r)
+      const hp = pages.headParams({ ...p, buckets: 60 })
+      const [r, ev] = await Promise.all([fetchLogs(id, hp), fetchEvents(id, p).catch(() => [])])
+      if (mine !== seq || !pages.takeHead(r, hp)) return
       events = ev
       shown = { from: p.from, to: p.to }
       error = null
@@ -54,7 +56,9 @@
 
   // Reload when a filter changes (debounced), and keep a preset range moving.
   $effect(() => {
-    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.from, L.to, [...L.levels].join(), L.limit]
+    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.from, L.to, [...L.levels].join()]
+    // Other filters: the older lines shown so far no longer fit.
+    untrack(() => pages.reset())
     const t = setTimeout(load, 80)
     return () => clearTimeout(t)
   })
@@ -109,7 +113,7 @@
   let rows = $derived.by(() => {
     const out: Row[] = []
     let last: Row | null = null
-    for (const e of res?.result.entries ?? []) {
+    for (const e of pages.entries) {
       if (L.collapse && last && e.fp && last.e.fp === e.fp) {
         last.n++
         continue
@@ -198,6 +202,8 @@
   let side = $derived(L.groupsAt === 'side' && L.groupsOpen && !L.maxi)
 
   const sourceLabel = (s: string) => (s.startsWith('stack:') ? `stack ${s.slice(6)}` : s)
+
+  let last = $derived(pages.entries.at(-1))
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -300,7 +306,7 @@
   <section class="panel streampanel" class:maxi={L.maxi} bind:this={streamEl}>
     <div class="ph">
       <h2>Log stream</h2>
-      {#if res}<span class="muted" style="font-size:12px">{res.result.total.toLocaleString()} lines{#if res.result.total > res.result.entries.length} · newest {res.result.entries.length}{/if}</span>{/if}
+      {#if res}<span class="muted" style="font-size:12px">{res.result.total.toLocaleString()} lines{#if pages.more} · newest {pages.entries.length.toLocaleString()} shown{/if}</span>{/if}
       {#if L.maxi}<span class="pill hide-sm">{app.active?.name}</span>{/if}
       <span class="spacer"></span>
       {#if !L.groupsOpen && !L.maxi}
@@ -335,12 +341,30 @@
       {:else}
         <div class="empty">{res ? 'No log lines match. Remove a filter or pick a wider range.' : ''}</div>
       {/each}
+      {#if res && rows.length}
+        <!-- Where the lines end, said in place: more to load, the most shown, or the start of what is stored. -->
+        <div class="stream-end" class:busy={pages.loadingOlder} use:nearEnd={() => pages.loadOlder(app.activeId, L.params(), app.describe)}>
+          {#if pages.olderError}
+            <span class="err-text">Older lines could not be read: {pages.olderError}</span>
+            <button class="btn ghost sm" onclick={() => pages.retry(app.activeId, L.params(), app.describe)}>Try again</button>
+          {:else if pages.more && !pages.full}
+            <button class="btn sm" onclick={() => pages.loadOlder(app.activeId, L.params(), app.describe)} disabled={pages.loadingOlder}>
+              {#if pages.loadingOlder}<span class="spinner" style="width:12px;height:12px"></span>Loading older lines{:else}Show {LINES.step.toLocaleString()} older lines{/if}
+            </button>
+            <span class="muted">{pages.entries.length.toLocaleString()} of {res.result.total.toLocaleString()} shown</span>
+          {:else if pages.more}
+            <span>The stream shows at most {LINES.max.toLocaleString()} lines. For older ones, drag across the graph to pick an earlier range, or download them.</span>
+          {:else if L.preset === 'auto'}
+            <span class="muted">These are all the stored lines that match{#if last}, back to {app.now - last.ts / 1000 > 20 * 3600e3 ? dateTime(last.ts / 1000) : hms(last.ts / 1000).slice(0, 8)}{/if}. Stackline keeps {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'} of logs, and reads a replica 6 hours back when it first sees it.</span>
+          {:else}
+            <span class="muted">No older lines in this range, which starts at {hhmm(shown.from)}.</span>
+            <button class="btn ghost sm" onclick={() => L.setPreset('auto')}>Show all stored lines</button>
+          {/if}
+        </div>
+      {/if}
     </div>
     <div class="stream-foot">
       {#if L.live}<span class="live-dot" style="background:var(--err)"></span>Following new lines every {app.settings?.logPollSecs ?? 3} s.{:else}Updates every 15 s. Turn on Live to follow new lines.{/if}
-      {#if res && res.result.total > res.result.entries.length && L.limit < LINES.max}
-        <button class="btn ghost sm" onclick={() => L.more()}>Show {Math.min(LINES.step, res.result.total - res.result.entries.length).toLocaleString()} more</button>
-      {/if}
       <span class="spacer"></span><span class="hide-sm">j / k move · Enter expands · c copies · f fills the window</span>
     </div>
   </section>

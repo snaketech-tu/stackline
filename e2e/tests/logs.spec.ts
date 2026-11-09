@@ -95,3 +95,44 @@ test('Copy link fixes the time range, and the link opens from Ctrl K', async ({ 
   await expect(page.getByRole('group', { name: 'Levels' }).getByRole('button', { name: /^Warn/ })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.getByRole('button', { name: 'Reset zoom' })).toBeVisible()
 })
+
+// `migrate` prints a 40 KB line, 1500 short lines and "Applied 3 migrations", then exits.
+test('the stream pages through every stored line, down to the oldest', async ({ page }) => {
+  await open(page, 'logs?c=local&s=demo_migrate')
+  const rows = page.locator('.stream > .row')
+  await expect(rows.first()).toContainText('Applied 3 migrations')
+  const end = page.locator('.stream-end')
+  await expect(end).toContainText(/Show 500 older lines|Loading older lines/)
+  // Scrolling to the end of the stream brings in the older lines, page by page.
+  await expect(async () => {
+    await end.scrollIntoViewIfNeeded()
+    await expect(end).toContainText('These are all the stored lines', { timeout: 1000 })
+  }).toPass({ timeout: 30_000 })
+  await expect(rows).toHaveCount(1502)
+  await expect(rows.last()).toContainText('Schema dump')
+  // Every line once, in order.
+  const msgs = await rows.locator('.msg').allTextContents()
+  const nums = msgs.map((m) => /Migrated row (\d+)/.exec(m)?.[1]).filter(Boolean).map(Number)
+  expect(nums).toEqual(Array.from({ length: 1500 }, (_, i) => 1500 - i))
+
+  // Other filters start over at the newest page, and paging works again.
+  await page.getByRole('group', { name: 'Levels' }).getByRole('button', { name: /^Info/ }).click()
+  await expect(async () => {
+    await end.scrollIntoViewIfNeeded()
+    await expect(end).toContainText('These are all the stored lines', { timeout: 1000 })
+  }).toPass({ timeout: 30_000 })
+  await expect(rows).toHaveCount(1502)
+})
+
+test('a line longer than 16 KB is one entry, whole, and the row says it goes on', async ({ page }) => {
+  await open(page, 'logs?c=local&s=demo_migrate')
+  await page.getByPlaceholder(/^Search/).fill('Schema dump')
+  const row = page.locator('.stream > .row', { hasText: 'Schema dump' })
+  await expect(row).toHaveCount(1)
+  await expect(row.locator('.rep')).toContainText(/\+[\d,.]+ chars/)
+  // The badge is on screen, not pushed out of the row by the long text.
+  const [badge, box] = [await row.locator('.rep').boundingBox(), await row.boundingBox()]
+  expect(badge!.x + badge!.width).toBeLessThanOrEqual(box!.x + box!.width)
+  await row.click()
+  await expect(row.locator('pre.trace')).toHaveText('Schema dump ' + 'x'.repeat(40000))
+})

@@ -1,8 +1,9 @@
 <script lang="ts">
   // A service with its logs and errors in tabs, so you can see why it fails without leaving the page.
   import { untrack } from 'svelte'
-  import { app, LEVELS, LINES, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
-  import { api, apiFetch, fetchEvents, fetchLogs, keepEntries, query } from '../lib/api'
+  import { app, LEVELS, LogFilters, load, save, type ServiceTab } from '../lib/state.svelte'
+  import { api, apiFetch, fetchEvents, fetchLogs, query, type LogParams } from '../lib/api'
+  import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
   import { eventColor, eventLabel, isCrash } from '../lib/events'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
@@ -83,10 +84,12 @@
   let hist = $state.raw<LogResponse | null>(null)
   /** Starts, stops and crashes of the last 24 hours. */
   let events = $state.raw<DockerEvent[]>([])
-  let lines = $state.raw<LogResponse | null>(null)
+  /** The lines of the logs tab, page by page; for a failing service also its newest line. */
+  const pages = new LogPages()
+  let lines = $derived(pages.head)
   let win = $state({ from: 0, to: 0 })
 
-  /** The stored range, at most the last 6 hours for the chart and 24 hours for lines. */
+  /** The stored range, at most the last 6 hours for the chart; lines go back as far as they are stored. */
   const range = (max: number) => app.storedRange(max)
 
   // Errors and groups: for the overview and errors tabs.
@@ -94,7 +97,7 @@
     void app.snap?.fetchedAt
     if (!name) return
     const r = range(6 * 3600e3)
-    fetchLogs(app.activeId, { ...r, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })
+    fetchLogs(app.activeId, { ...r, open: true, service: name, levels: 'ERROR,WARN', buckets: 36, limit: 1 })
       .then((x) => {
         hist = x
         win = r
@@ -114,29 +117,40 @@
 
   // Lines: the logs tab, and the newest line for a failing service.
   let linesSeq = 0
+  /** The query of the logs tab as it stands; "Show more" pages through it. */
+  let linesParams: LogParams | null = null
   $effect(() => {
     const svc = name
     if (!svc || (tab !== 'logs' && !failing)) return
     const id = app.activeId
     const lv = tab === 'logs' ? [...F.levels].join(',') : LEVELS.join(',')
     const filter = tab === 'logs' ? [replica ? `replica:${replica}` : '', q].filter(Boolean).join(' ') : ''
-    const n = tab === 'logs' ? F.limit : 1
+    const first = tab === 'logs' ? LINES.first : 1
     const mine = ++linesSeq
+    // New filters: the older lines shown so far no longer fit.
+    untrack(() => pages.reset())
+    const params = (): LogParams => {
+      const days = untrack(() => app.settings?.retentionDays) ?? 2
+      return { ...range(days * 86400e3), open: true, service: svc, levels: lv, q: filter, buckets: 1 }
+    }
+    linesParams = params()
     const get = () => {
-      fetchLogs(id, { ...range(24 * 3600e3), service: svc, levels: lv, q: filter, buckets: 1, limit: n })
+      const p = params()
+      linesParams = p
+      const hp = pages.headParams(p, first)
+      fetchLogs(id, hp)
         // A slow answer for filters that changed since must not replace the current one.
         .then((x) => {
-          if (mine !== linesSeq) return
-          lines = keepEntries(lines, x)
+          if (mine === linesSeq) pages.takeHead(x, hp)
         })
         .catch(() => {})
     }
     untrack(get)
-    // Big pages refresh less often; the newest lines still show up within 15 seconds.
-    const every = n > 500 ? 15000 : Math.max(2, untrack(() => app.settings?.logPollSecs) ?? 3) * 1000
+    const every = Math.max(2, untrack(() => app.settings?.logPollSecs) ?? 3) * 1000
     const t = setInterval(() => !document.hidden && get(), every)
     return () => clearInterval(t)
   })
+  const older = () => (linesParams ? pages.loadOlder(app.activeId, linesParams, app.describe) : false)
   let terms = $derived(searchTerms(q))
 
   let newest = $derived(lines?.result.entries[0])
@@ -152,8 +166,7 @@
     const next = list[(i + d + list.length) % list.length]
     replica = null
     F.openRows.clear()
-    F.limit = LINES.first
-    lines = null
+    pages.clear()
     hist = null
     events = []
     details = null
@@ -417,18 +430,30 @@
     </div>
     <div class="boxed">
       <div class="stream">
-        {#each lines?.result.entries ?? [] as e (e.id)}
+        {#each pages.entries as e (e.id)}
           <LogRow {e} service={false} {terms} open={F.openRows.has(e.id)} ontoggle={() => F.toggleRow(e.id)} />
         {:else}
           <div class="empty">{lines ? 'No lines stored for this service yet.' : ''}</div>
         {/each}
+        {#if lines && pages.entries.length}
+          <div class="stream-end" use:nearEnd={older}>
+            {#if pages.olderError}
+              <span class="err-text">Older lines could not be read: {pages.olderError}</span>
+              <button class="btn ghost sm" onclick={() => linesParams && pages.retry(app.activeId, linesParams, app.describe)}>Try again</button>
+            {:else if pages.more && !pages.full}
+              <button class="btn sm" onclick={older} disabled={pages.loadingOlder}>
+                {#if pages.loadingOlder}<span class="spinner" style="width:12px;height:12px"></span>Loading older lines{:else}Show {LINES.step.toLocaleString()} older lines{/if}
+              </button>
+              <span class="muted">{pages.entries.length.toLocaleString()} of {lines.result.total.toLocaleString()} shown</span>
+            {:else if pages.more}
+              <span>The drawer shows at most {LINES.max.toLocaleString()} lines. Open in Logs to pick an older range or download them.</span>
+            {:else}
+              <span class="muted">These are all the stored lines of this service that match.</span>
+            {/if}
+          </div>
+        {/if}
       </div>
     </div>
-    {#if lines && lines.result.total > lines.result.entries.length}
-      <span class="muted" style="font-size:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">Newest {lines.result.entries.length.toLocaleString()} of {lines.result.total.toLocaleString()} lines.
-        {#if F.limit < LINES.max}<button class="btn ghost sm" onclick={() => F.more()}>Show {Math.min(LINES.step, lines.result.total - lines.result.entries.length).toLocaleString()} more</button>{/if}
-        Open in Logs for groups and download.</span>
-    {/if}
   {:else}
     {#each groups as g (g.fp)}
       <div class="ecard">

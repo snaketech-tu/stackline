@@ -3,6 +3,21 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## Unreleased
+
+Logs no longer end without warning: the stream pages through every stored line, and long lines are stored whole.
+
+### Fixed
+- **The stream stopped at 5,000 lines with no way on.** "Show more" raised a single limit up to 5,000 lines and then disappeared, so the stream just ended. Now the stream loads older lines page by page as you scroll to its end (or with **Show 500 older lines**), each page starting exactly after the last line shown, up to 20,000 lines. Past that it says so and points to the time graph and the download
+- **"Show more" missing although more lines existed.** The button compared the line counts of the time graph with the lines shown. Whether more lines exist is now asked of the lines themselves, so the button is there whenever older lines are
+- **The end of the stream says why it ends**: more to load, the most the stream shows, the start of the picked range, or the oldest stored line, with how long Stackline keeps logs
+- **Lines longer than 16 KB came back with timestamps in their middle.** Docker stores such a line as several 16 KB records and puts a timestamp in front of each. Stackline now joins them, so a big JSON body or SQL statement is one whole line again
+- **A read cut off by its time limit stored its last line cut off**, and that line was never read again. Now an unfinished line is left for the next poll, which reads it whole
+- **A read that broke off could store lines twice, or lose the entry it was building.** The stored position now stops before an entry that is not finished, so after a failed read or a restart its lines are read again
+- **The newest lines were missing when the host's clock runs ahead.** A range that ends now also shows lines stamped a little later, by a host whose clock is ahead of this computer's
+- **A collapsed row cut at 400 characters looked complete.** It now ends with "…" and says how many characters are left; click it to read the whole line. The "+N chars" and "N lines" badges of a long line used to be pushed off the row; they now always show
+- **The logs tab of a service panel showed only the last 24 hours**, without saying so. It now pages through every stored line of the service too
+
 ## 0.5.0
 
 swarmdash is now Stackline. New: a debug report per service, a warning when a service goes quiet, Podman hosts, more log formats, and deploys on the time graphs with the errors that started after them.

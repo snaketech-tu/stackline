@@ -17,7 +17,11 @@
   let lines = $derived(e.text.split('\n'))
   // A collapsed row shows one line, cut short: a very long line (a big JSON
   // body, say) is costly to lay out and is cut off on screen anyway.
-  let head = $derived(tidy(firstLine(e.text)).slice(0, 400))
+  const HEAD = 400
+  let line1 = $derived(tidy(firstLine(e.text)))
+  let head = $derived(line1.length > HEAD ? line1.slice(0, HEAD) + '…' : line1)
+  /** What the collapsed row leaves out of its first line, said on the row so a cut line never looks complete. */
+  let cut = $derived(Math.max(0, line1.length - HEAD))
   // An open entry shows its first lines until asked for all of them.
   const FIRST = 200
   let all = $state(false)
@@ -46,7 +50,7 @@
   {#if service}
     <button class="svc" title="Show only {e.service}" onclick={() => onservice?.()}>{e.service}<span class="muted">.{e.replica}</span></button>
   {/if}
-  <span class="msg">{#if !open}{#each marks(head, terms) as m, i (i)}{#if m.m}<mark>{m.t}</mark>{:else}{m.t}{/if}{/each}{#if e.lines > 1}<span class="rep" title="Multi-line entry, reassembled per replica">{e.lines} lines</span>{/if}{/if}{#if n > 1}<span class="rep">+{n - 1} similar</span>{/if}</span>
+  <span class="msg">{#if !open}<span class="mt">{#each marks(head, terms) as m, i (i)}{#if m.m}<mark>{m.t}</mark>{:else}{m.t}{/if}{/each}</span>{#if cut}<span class="rep" title="A long line: click to read all of it">+{cut.toLocaleString()} chars</span>{/if}{#if e.lines > 1}<span class="rep" title="Multi-line entry, reassembled per replica">{e.lines} lines</span>{/if}{/if}{#if n > 1}<span class="rep">+{n - 1} similar</span>{/if}</span>
   {#if hot || open}<span class="ra">
     {#if service && onservice}<button class="ib" title="Only {e.service}" aria-label="Only {e.service}" onclick={() => onservice?.()}><Icon name="filter" size={13} /></button>{/if}
     {#if oncontext}<button class="ib" title="Show what this container printed 30 s before and after" aria-label="Show 30 seconds around it" onclick={() => oncontext?.()}><Icon name="clock" size={13} /></button>{/if}

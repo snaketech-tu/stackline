@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use stackline_core::config::{Collect, ConnectionConfig, ConnectionKind, Settings, new_id};
 use stackline_core::logs::Level;
 use stackline_core::runtime::test_connection;
-use stackline_core::store::{ExportFormat, LogFilter};
+use stackline_core::store::{ExportFormat, LogFilter, Page};
 
 use crate::AppState;
 
@@ -254,13 +254,19 @@ struct LogParams {
     levels: Option<String>,
     buckets: Option<usize>,
     limit: Option<usize>,
+    /// A page of the stream: lines older than `<ts>:<id>` (µs and line id),
+    /// or with `after` the newest lines newer than it.
+    before: Option<String>,
+    after: Option<String>,
+    /// The range ends now; see [`LogFilter::open_end`].
+    open: Option<bool>,
     format: Option<String>,
     save: Option<bool>,
 }
 
 impl LogParams {
     fn filter(&self) -> LogFilter {
-        let mut f = LogFilter { from: self.from * 1000, to: self.to * 1000, ..Default::default() };
+        let mut f = LogFilter { from: self.from * 1000, to: self.to * 1000, open_end: self.open == Some(true), ..Default::default() };
         let list = |v: &Option<String>| -> Vec<String> {
             v.as_deref().unwrap_or("").split(',').map(str::trim).filter(|s| !s.is_empty() && *s != "all").map(str::to_string).collect()
         };
@@ -282,7 +288,9 @@ async fn logs(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> Res
     let f = p.filter();
     let store = st.manager.store.clone();
     let (buckets, limit) = (p.buckets.unwrap_or(60), p.limit.unwrap_or(300));
-    let res = tokio::task::spawn_blocking(move || store.query(&id, &f, buckets, limit)).await.map_err(|e| anyhow::anyhow!(e))??;
+    let page = Page::parse(p.before.as_deref(), p.after.as_deref());
+    let res =
+        tokio::task::spawn_blocking(move || store.query_page(&id, &f, buckets, limit, page)).await.map_err(|e| anyhow::anyhow!(e))??;
     let state = rt.state();
     Ok(Json(json!({ "result": res, "syncedAt": state.logs_synced_at, "logErrors": state.log_errors })))
 }

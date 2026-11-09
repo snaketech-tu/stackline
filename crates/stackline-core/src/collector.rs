@@ -43,6 +43,9 @@ struct SourceState {
     epoch: u64,
     /// The first read goes back the whole retention, not [`FIRST_READ_US`].
     refill: bool,
+    /// The cursor last written to the store, which can be ahead of `cursor`
+    /// while a long read stores its lines in batches.
+    stored: Option<i64>,
 }
 
 pub struct Collector {
@@ -88,6 +91,7 @@ impl Collector {
                 tail: TAIL_MIN,
                 epoch,
                 refill,
+                stored: None,
                 src: src.clone(),
             });
             // A container that just stopped is read right away: its last
@@ -124,6 +128,13 @@ impl Collector {
                         }
                         Err(e) => {
                             st.error = Some(format!("{}: {e:#}", st.src.service));
+                            // Batches stored before the error stay stored: go on
+                            // after them, or the next poll stores them twice.
+                            // A half-built entry is dropped for the same reason.
+                            if st.stored > st.cursor {
+                                st.cursor = st.stored;
+                            }
+                            st.assembler = Assembler::new(&st.src.service);
                             0
                         }
                     };
@@ -170,16 +181,27 @@ async fn read_source(
     loop {
         let deadline = Instant::now() + Duration::from_secs(60);
         let mut body = client.get_stream(&format!("{path}&tail={tail}")).await?;
-        let mut decoder = LineDecoder::new(st.src.tty);
+        let mut decoder = LineDecoder::with_timestamps(st.src.tty);
         let mut lines = Vec::new();
+        let mut complete = false;
         loop {
             let frame = match tokio::time::timeout_at(deadline.into(), body.frame()).await {
                 Ok(Some(f)) => f?,
-                Ok(None) | Err(_) => break,
+                Ok(None) => {
+                    complete = true;
+                    break;
+                }
+                Err(_) => break,
             };
             if let Ok(data) = frame.into_data() {
                 decoder.push(&data, &mut lines);
             }
+        }
+        if !complete {
+            // Cut short by the deadline: what came is the start of the newest
+            // `tail` lines, which may begin after lines not read yet. Read
+            // everything after the cursor instead.
+            return read_stream(client, store, conn, st, &path, Duration::from_secs(600), now).await;
         }
         decoder.finish(&mut lines);
         if lines.len() < tail / 2 {
@@ -217,17 +239,21 @@ async fn read_stream(
     now: i64,
 ) -> Result<usize> {
     let mut body = client.get_stream(path).await?;
-    let mut decoder = LineDecoder::new(st.src.tty);
+    let mut decoder = LineDecoder::with_timestamps(st.src.tty);
     let mut lines = Vec::new();
     let mut entries: Vec<LogEntry> = Vec::new();
     let mut written = 0usize;
     let mut last_ts = st.cursor;
     let deadline = Instant::now() + timeout;
+    let mut complete = false;
 
     loop {
         let frame = match tokio::time::timeout_at(deadline.into(), body.frame()).await {
             Ok(Some(f)) => f?,
-            Ok(None) => break,
+            Ok(None) => {
+                complete = true;
+                break;
+            }
             Err(_) => break,
         };
         let Ok(data) = frame.into_data() else { continue };
@@ -237,7 +263,10 @@ async fn read_stream(
             written += flush(store, conn, st, &mut entries, last_ts).await?;
         }
     }
-    decoder.finish(&mut lines);
+    // Cut short by the deadline: the unfinished last line is left for the next poll.
+    if complete {
+        decoder.finish(&mut lines);
+    }
     consume(st, &mut lines, &mut entries, &mut last_ts);
     if st.src.running {
         st.assembler.flush_if_idle(now, &mut entries);
@@ -267,9 +296,15 @@ fn consume(
     }
 }
 
-async fn flush(store: &Arc<Store>, conn: &str, st: &SourceState, entries: &mut Vec<LogEntry>, last_ts: Option<i64>) -> Result<usize> {
+async fn flush(store: &Arc<Store>, conn: &str, st: &mut SourceState, entries: &mut Vec<LogEntry>, last_ts: Option<i64>) -> Result<usize> {
     let batch = std::mem::take(entries);
     let n = batch.len();
+    // The stored cursor stops before the entry still being built: after a
+    // restart or a failed read its lines are read again, not lost.
+    let last_ts = match (last_ts, st.assembler.pending_since()) {
+        (Some(t), Some(p)) => Some(t.min(p - 1)),
+        (t, _) => t,
+    };
     let (store, conn, src, epoch) = (store.clone(), conn.to_string(), st.src.clone(), st.epoch);
     tokio::task::spawn_blocking(move || -> Result<()> {
         // The store was cleared during this read: the next poll starts over.
@@ -283,6 +318,7 @@ async fn flush(store: &Arc<Store>, conn: &str, st: &SourceState, entries: &mut V
         Ok(())
     })
     .await??;
+    st.stored = last_ts.or(st.stored);
     Ok(n)
 }
 
@@ -373,10 +409,18 @@ mod tests {
                 continue;
             }
             let stamp = chrono::DateTime::from_timestamp_micros(*ts).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
-            let line = format!("{stamp} {text}\n");
-            out.extend_from_slice(&[1, 0, 0, 0]);
-            out.extend_from_slice(&(line.len() as u32).to_be_bytes());
-            out.extend_from_slice(line.as_bytes());
+            // Like Docker: a record per 16 KB of the line, each with the timestamp.
+            let parts: Vec<&[u8]> = if text.is_empty() { vec![b""] } else { text.as_bytes().chunks(16 * 1024).collect() };
+            for (i, part) in parts.iter().enumerate() {
+                let mut rec = format!("{stamp} ").into_bytes();
+                rec.extend_from_slice(part);
+                if i + 1 == parts.len() {
+                    rec.push(b'\n');
+                }
+                out.extend_from_slice(&[1, 0, 0, 0]);
+                out.extend_from_slice(&(rec.len() as u32).to_be_bytes());
+                out.extend_from_slice(&rec);
+            }
         }
         out
     }
@@ -499,5 +543,111 @@ mod tests {
         let r = c.poll(&docker.client(), vec![stopped.clone()], RETENTION).await;
         assert_eq!((r.sources, r.entries), (1, 1), "{r:?}");
         assert_eq!(c.poll(&docker.client(), vec![stopped], RETENTION).await.sources, 0);
+    }
+
+    #[tokio::test]
+    async fn a_line_longer_than_16_kb_is_stored_whole() {
+        let docker = FakeDocker::start().await;
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let now = chrono::Utc::now().timestamp_micros();
+        let body = format!("INFO response {{\"items\":[{}]}}", vec!["\"x\""; 15_000].join(","));
+        docker.write(now - 60_000_000, &body);
+        docker.write(now - 59_000_000, "INFO next");
+        let mut c = Collector::new("conn", store.clone());
+        let r = c.poll(&docker.client(), vec![source()], RETENTION).await;
+        assert_eq!((r.entries, r.errors.len()), (2, 0), "{r:?}");
+        let res = store.query("conn", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 10).unwrap();
+        let long = res.entries.iter().find(|e| e.text.starts_with("INFO response")).unwrap();
+        assert_eq!(long.text, body);
+    }
+
+    #[tokio::test]
+    async fn a_read_cut_off_by_its_deadline_leaves_the_unfinished_line_for_later() {
+        // A daemon that sends one line and the first record of a long one, then stalls.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let now = chrono::Utc::now().timestamp_micros();
+        let stamp = |ts: i64| chrono::DateTime::from_timestamp_micros(ts).unwrap().to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
+        let (t1, t2) = (now - 60_000_000, now - 59_000_000);
+        let mut body = Vec::new();
+        for rec in [format!("{} INFO done\n", stamp(t1)), format!("{} INFO {}", stamp(t2), "y".repeat(16 * 1024))] {
+            body.extend_from_slice(&[1, 0, 0, 0]);
+            body.extend_from_slice(&(rec.len() as u32).to_be_bytes());
+            body.extend_from_slice(rec.as_bytes());
+        }
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 4096];
+            let _ = sock.read(&mut buf).await;
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+            sock.write_all(head.as_bytes()).await.unwrap();
+            sock.write_all(format!("{:x}\r\n", body.len()).as_bytes()).await.unwrap();
+            sock.write_all(&body).await.unwrap();
+            sock.write_all(b"\r\n").await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        });
+        let client = DockerClient::new(Endpoint::Tcp(addr));
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let src = source();
+        let mut st = SourceState {
+            assembler: Assembler::new(&src.service),
+            cursor: None,
+            last_read: None,
+            error: None,
+            tail: TAIL_MIN,
+            epoch: store.epoch(),
+            refill: false,
+            stored: None,
+            src,
+        };
+        let path = "/containers/c1/logs?stdout=1&stderr=1&timestamps=1";
+        let n = read_stream(&client, &store, "conn", &mut st, path, Duration::from_millis(500), now).await.unwrap();
+        assert_eq!(n, 1);
+        let res = store.query("conn", &LogFilter { from: 0, to: i64::MAX, ..Default::default() }, 1, 10).unwrap();
+        assert_eq!(res.entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(), ["INFO done"]);
+        // The next poll goes on right after the line that was read whole.
+        assert_eq!(st.cursor, Some(t1));
+    }
+
+    #[tokio::test]
+    async fn a_read_that_breaks_off_loses_no_line_and_stores_none_twice() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let now = chrono::Utc::now().timestamp_micros();
+        let served: Vec<(i64, String)> = (0..3000).map(|i| (now - 60_000_000 + i * 1000, format!("INFO line {i}"))).collect();
+        tokio::spawn(async move {
+            for round in 0.. {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let path = head.lines().next().unwrap().split(' ').nth(1).unwrap().to_string();
+                let body = frames(&served, &path);
+                // The first answer breaks off after 2500 lines, in the middle of the body.
+                let body = if round == 0 { body[..body.len() * 5 / 6].to_vec() } else { body };
+                let res = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nTransfer-Encoding: chunked\r\n\r\n";
+                sock.write_all(res.as_bytes()).await.unwrap();
+                sock.write_all(format!("{:x}\r\n", body.len()).as_bytes()).await.unwrap();
+                sock.write_all(&body).await.unwrap();
+                if round == 0 {
+                    // Gone without ending the body.
+                    drop(sock);
+                    continue;
+                }
+                sock.write_all(b"\r\n0\r\n\r\n").await.unwrap();
+                let _ = sock.shutdown().await;
+            }
+        });
+        let client = DockerClient::new(Endpoint::Tcp(addr));
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let mut c = Collector::new("conn", store.clone());
+        let r = c.poll(&client, vec![source()], RETENTION).await;
+        assert_eq!(r.errors.len(), 1, "{r:?}");
+        let first = stored(&store);
+        assert!((2000..3000).contains(&first), "{first}");
+        let r = c.poll(&client, vec![source()], RETENTION).await;
+        assert!(r.errors.is_empty(), "{r:?}");
+        // Each line once: none stored twice, and the one being built when the read broke off not lost.
+        assert_eq!(stored(&store), 3000);
     }
 }

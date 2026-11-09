@@ -52,15 +52,19 @@ export const post = <T>(path: string, body: unknown) => api<T>(path, { method: '
 export const put = <T>(path: string, body: unknown) => api<T>(path, { method: 'PUT', body: JSON.stringify(body) })
 export const del = (path: string) => api<void>(path, { method: 'DELETE' })
 
-export function query(params: Record<string, string | number | undefined | null>): string {
+export function query(params: Record<string, string | number | boolean | undefined | null>): string {
   const q = new URLSearchParams()
-  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '' && v !== false) q.set(k, String(v))
   return q.toString()
 }
 
 /** Parameters of a log query. Times are Unix milliseconds; `levels`, `stack` and `service` are comma lists. */
 export interface LogParams {
   from: number; to: number; levels?: string; stack?: string; service?: string; q?: string; buckets?: number; limit?: number
+  /** A page of lines: older than `<ts>:<id>`, or (`after`) newer than it. */
+  before?: string; after?: string
+  /** The range ends now: lines stamped later by a host whose clock runs ahead count too. */
+  open?: boolean
 }
 
 /** Queries the stored logs of a connection. */
@@ -70,9 +74,9 @@ export function fetchLogs(conn: string, p: LogParams): Promise<LogResponse> {
 
 /** Container starts, stops and crashes, filtered by the sources of `p`. */
 export async function fetchEvents(conn: string, p: LogParams): Promise<DockerEvent[]> {
-  const { from, to, stack, service, q, limit } = p
+  const { from, to, stack, service, q, open } = p
   const r = await api<{ events: DockerEvent[] }>(
-    `/c/${encodeURIComponent(conn)}/events?${query({ from: Math.floor(from), to: Math.ceil(to), stack, service, q, limit })}`,
+    `/c/${encodeURIComponent(conn)}/events?${query({ from: Math.floor(from), to: Math.ceil(to), stack, service, q, open, limit: p.limit ?? 500 })}`,
   )
   return r.events
 }
