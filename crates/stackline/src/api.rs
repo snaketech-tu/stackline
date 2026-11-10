@@ -203,7 +203,7 @@ async fn action(st: St, Path(id): Path<String>, Json(req): Json<stackline_core::
         };
         return Err(ApiError(StatusCode::FORBIDDEN, why.into()));
     };
-    let plan = rt.act(&req, &host, &st.manager.config().settings).await.map_err(|e| {
+    let plan = rt.act(&req, &host, &st.manager.config().settings, &st.manager.store).await.map_err(|e| {
         let code = if e.is::<stackline_core::actions::Changed>() { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
         ApiError(code, format!("{e:#}"))
     })?;

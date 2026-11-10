@@ -112,7 +112,15 @@ impl Runtime {
     /// Reads the state again right after, so the next look shows the change.
     /// `host` is the server changes were allowed for: nothing is sent unless
     /// the state the plan is made from comes from that server.
-    pub async fn act(&self, req: &crate::actions::Request, host: &str, settings: &Settings) -> Result<crate::actions::Plan> {
+    /// Every change is also stored as an event of kind `action`, so it shows
+    /// on the time graphs next to what it was meant to fix.
+    pub async fn act(
+        &self,
+        req: &crate::actions::Request,
+        host: &str,
+        settings: &Settings,
+        store: &Arc<Store>,
+    ) -> Result<crate::actions::Plan> {
         let snap = self.snapshot().ok_or_else(|| anyhow::anyhow!("Not connected yet."))?;
         if snap.identity().as_deref() != Some(host) {
             anyhow::bail!("{} now reaches another server than changes were allowed for.", self.cfg.name);
@@ -137,6 +145,29 @@ impl Runtime {
         let client = self.client().await?;
         tracing::info!(connection = %self.cfg.name, command = %plan.command, "changing a service");
         let res = crate::actions::run(&client, &plan).await;
+        let ts = chrono::Utc::now().timestamp_micros();
+        let outcome = match &res {
+            Ok(()) => "done".to_string(),
+            Err(e) => format!("failed: {e:#}"),
+        };
+        let event = crate::events::Event {
+            key: format!("action:{ts}:{}", plan.fingerprint()),
+            ts,
+            stack: svc.stack.clone(),
+            service: svc.full_name.clone(),
+            replica: req.replica.clone().unwrap_or_default(),
+            node: String::new(),
+            source: String::new(),
+            kind: crate::events::Kind::Action,
+            exit_code: None,
+            detail: Some(format!("{} · {outcome}", plan.command)),
+        };
+        let (store, conn) = (store.clone(), self.cfg.id.clone());
+        match tokio::task::spawn_blocking(move || store.insert_events(&conn, &[event])).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!("could not store the change made on {}: {e:#}", self.cfg.name),
+            Err(_) => {}
+        }
         self.refresh(settings).await;
         res.map(|()| plan)
     }

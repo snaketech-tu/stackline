@@ -50,7 +50,7 @@
     const to = Date.now()
     fetchEvents(id, { from: to - 6 * 3600e3, to: to + 60e3, limit: 2000 })
       .then((x) => {
-        if (id === app.activeId) events = x.filter((e) => isCrash(e) || e.kind === 'unhealthy' || e.kind === 'deploy')
+        if (id === app.activeId) events = x.filter((e) => isCrash(e) || e.kind === 'unhealthy' || e.kind === 'deploy' || e.kind === 'action')
       })
       .catch(() => {})
   })
@@ -273,8 +273,9 @@
     {/if}
     <div class="legend" style="padding:0 14px 12px 52px">
       <span><i style="background:var(--err)"></i>Errors</span><span><i style="background:var(--warn)"></i>Warnings</span><span><i class="line" style="background:var(--exc)"></i>Exceptions</span>
-      {#if events.some((e) => e.kind !== 'deploy')}<span><i class="mark" style="background:var(--err)"></i>Crashes</span>{/if}
+      {#if events.some((e) => e.kind !== 'deploy' && e.kind !== 'action')}<span><i class="mark" style="background:var(--err)"></i>Crashes</span>{/if}
       {#if events.some((e) => e.kind === 'deploy')}<span><i class="mark" style="background:var(--accent)"></i>Deploys</span>{/if}
+      {#if events.some((e) => e.kind === 'action')}<span><i class="mark" style="background:var(--info)"></i>Changes</span>{/if}
     </div>
   </section>
 </div>

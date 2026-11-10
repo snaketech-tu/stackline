@@ -4,7 +4,7 @@
   import { app, LEVELS, LogFilters, type ServiceTab } from '../lib/state.svelte'
   import { api, apiFetch, fetchEvents, fetchLogs, query, type LogParams } from '../lib/api'
   import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
-  import { eventColor, eventLabel, isCrash } from '../lib/events'
+  import { eventColor, eventLabel, isCrash, isServiceWide } from '../lib/events'
   import { ago, bytes, dateTime, firstLine, hhmm, patternParts, pct, searchTerms, tidy } from '../lib/format'
   import { svcState, taskPill } from '../lib/health'
   import type { DockerEvent, Level, LogResponse, ServiceDetails } from '../lib/types'
@@ -331,18 +331,18 @@
     </div>
     {#if notable.length}
       <div>
-        <h4>Deploys, stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
+        <h4>Deploys, changes, stops and crashes · last 24 h{#if crashes}{' · '}<span style="color:var(--err)">{crashes} {crashes === 1 ? 'crash' : 'crashes'}</span>{/if}</h4>
         <div class="tw boxed">
           <table class="evlist">
             <tbody>
               {#each notable as e (e.ts + e.source + e.kind)}
                 <tr>
                   <td class="mono muted" style="white-space:nowrap" title={dateTime(e.ts / 1000)}>{when(e.ts)}</td>
-                  <td class="mono" style="white-space:nowrap">{e.kind === 'deploy' ? '' : `#${e.replica}`}</td>
+                  <td class="mono" style="white-space:nowrap">{isServiceWide(e) ? '' : `#${e.replica}`}</td>
                   <td style:color={eventColor(e) === 'var(--muted)' ? undefined : eventColor(e)}>{eventLabel(e)}</td>
                   <td class="actcell">
-                    {#if e.kind === 'deploy'}
-                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showDeploy(e)} title="What the service logged from a minute before the deploy to 10 minutes after">Lines after</button>
+                    {#if e.kind === 'deploy' || e.kind === 'action'}
+                      <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showDeploy(e)} title="What the service logged from a minute before the {e.kind === 'deploy' ? 'deploy' : 'change'} to 10 minutes after">Lines after</button>
                     {:else}
                       <button class="btn ghost sm" style="white-space:nowrap" onclick={() => app.showEvent(e)} title="The lines replica {e.replica} printed in the 2 minutes before">Lines before</button>
                     {/if}
@@ -354,7 +354,7 @@
         </div>
       </div>
     {/if}
-    {#if !notable.length}<div class="empty">No deploys, stops or crashes of this service in the last 24 hours.</div>{/if}
+    {#if !notable.length}<div class="empty">No deploys, changes, stops or crashes of this service in the last 24 hours.</div>{/if}
   {:else if tab === 'config'}
     {@const d = details}
     {#if !d}<div class="empty">{detailsError ? `The configuration could not be read: ${detailsError}` : 'Reading the configuration…'}</div>{/if}

@@ -91,3 +91,20 @@ test('the palette finds "allow changes", and the dialog keeps its keys after a c
   await expect(ask).toHaveCount(0)
   await expect(page.locator('header.top').getByRole('switch')).toHaveAttribute('aria-checked', 'true')
 })
+
+test('a change runs only as confirmed, and shows up among the service events', async ({ request }) => {
+  await request.put('/api/c/local/access', { headers, data: { writable: true } })
+  const ask = { action: 'restart', service: 'demo_worker' }
+  const dry = await (await request.post('/api/c/local/action', { headers, data: { ...ask, dry: true } })).json()
+  expect(dry.command).toContain('docker restart')
+  // A plan made from another state of the service is refused.
+  const stale = await request.post('/api/c/local/action', { headers, data: { ...ask, expect: 'not-this-plan' } })
+  expect(stale.status()).toBe(409)
+  const before = Date.now()
+  const done = await request.post('/api/c/local/action', { headers, data: { ...ask, expect: dry.plan } })
+  expect(done.ok()).toBe(true)
+  const r = await request.get(`/api/c/local/events?from=${before - 60e3}&to=${Date.now() + 60e3}&service=demo_worker&limit=100`, { headers })
+  const { events } = await r.json()
+  const change = events.find((e: { kind: string }) => e.kind === 'action')
+  expect(change?.detail).toMatch(/^docker restart .* · done$/)
+})
