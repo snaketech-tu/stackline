@@ -3,6 +3,16 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## 0.8.0
+
+A calmer interface: the same pages and the same colors, with less decoration in the way of your logs.
+
+### Changed
+- **Labels read like text.** Sidebar groups, table headers, inspector sections and menu headings are in sentence case instead of small spaced capitals, and headings use lighter weights
+- **Overview stat cards show their numbers.** The rings and the small error curve are gone: they repeated the figure beside them and the chart below. In Needs attention, a colored dot marks how serious an item is
+- **Less shine.** No glow behind the page, no frosted top bar, no colored shadows or gradients on buttons, meters and the error card. In dark mode panels are set apart by their surfaces and edges instead of shadows
+- Even spacing and one corner size for buttons, inputs and filters; level filters and filter chips are no longer round pills
+
 ## 0.7.1
 
 ### Fixed
