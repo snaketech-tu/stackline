@@ -1597,7 +1597,10 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntryOut> {
 }
 
 fn csv(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
+    // A cell starting like a formula is run by spreadsheet apps when the file
+    // is opened; a log line must never do that, so it starts with ' instead.
+    let s = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{s}") } else { s.to_string() };
+    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s }
 }
 
 #[cfg(test)]
@@ -1761,6 +1764,15 @@ mod tests {
         assert_eq!(keys(&all, 10), ["b", "c"]);
         store.clear(Some("c1")).unwrap();
         assert!(keys(&all, 10).is_empty());
+    }
+
+    #[test]
+    fn csv_cells_never_start_a_formula() {
+        assert_eq!(csv("=HYPERLINK(\"http://x\")"), "\"'=HYPERLINK(\"\"http://x\"\")\"");
+        assert_eq!(csv("-1 retries left"), "'-1 retries left");
+        assert_eq!(csv("@admin logged in"), "'@admin logged in");
+        assert_eq!(csv("plain, text"), "\"plain, text\"");
+        assert_eq!(csv("ok"), "ok");
     }
 
     #[test]

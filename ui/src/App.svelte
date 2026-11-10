@@ -61,6 +61,8 @@
       gAt = e.key === 'g' ? Date.now() : 0
     }
   }
+  /** The note about a reset settings file was read. */
+  let configSeen = $state(false)
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -112,6 +114,13 @@
       </button>
     </header>
     <main class="view">
+      {#if app.meta?.configWarning && !configSeen}
+        <div class="warn-banner host-banner" role="alert">
+          <span><b>Your settings were reset.</b><br /><span class="muted" style="font-size:12.5px">{app.meta.configWarning}</span></span>
+          <span class="spacer"></span>
+          <button class="btn sm" onclick={() => (configSeen = true)}>OK</button>
+        </div>
+      {/if}
       {#if app.fatal}
         <div class="center-empty"><b style="color:var(--fg)">{app.fatal}</b><button class="btn" onclick={() => location.reload()}>Try again</button></div>
       {:else if app.view === 'connections'}

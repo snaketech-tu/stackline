@@ -52,7 +52,11 @@ export interface Settings {
   alertEnabled: boolean; alertWindowMins: number; alertThreshold: number
 }
 
-export interface Meta { version: string; desktop: boolean; storePath: string; platform: string }
+export interface Meta {
+  version: string; desktop: boolean; storePath: string; platform: string
+  /** The settings file could not be read at startup and was set aside. */
+  configWarning?: string | null
+}
 
 export interface Bucket { error: number; warn: number; info: number; debug: number; exc: number }
 export interface Group {

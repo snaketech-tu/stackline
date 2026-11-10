@@ -77,6 +77,7 @@ async fn meta(st: St) -> Json<Value> {
         "desktop": st.desktop,
         "storePath": st.manager.store_path().display().to_string(),
         "platform": std::env::consts::OS,
+        "configWarning": st.manager.config_warning,
     }))
 }
 
