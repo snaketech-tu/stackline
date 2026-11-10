@@ -3,6 +3,12 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## 0.7.1
+
+### Fixed
+- **From and To times in the time range menu can be set again.** While the menu was open, every refresh of the page (every few seconds) put both fields, and the typed range, back to the range on screen, so a time being entered was wiped before it could be shown. The fields now keep what you type until you show the range or close the menu
+- **From and To are plain text fields with a calendar button.** The browser's date fields split a time into small parts that are hard to type into (the year takes more than four digits, so the time never got focus). Type `2026-11-10 08:15`, `10.11. 8:15`, `yesterday 14:00` or `14:00`, or pick from the calendar; the line under each field says how it was read. Enter shows the range, the up and down arrows move a minute (with Shift an hour)
+
 ## 0.7.0
 
 ### Added

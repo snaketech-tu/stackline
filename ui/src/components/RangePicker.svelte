@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   // The time range of the Logs page: one-click presets, a menu to type or pick
   // any range, and steps to the range before or after.
   import { app, PRESETS, type Preset } from '../lib/state.svelte'
-  import { inputValue, parseRange, rangeInput, presetText, rangeText, type Range } from '../lib/timeframe'
+  import { fieldValue, parsePoint, parseRange, rangeInput, presetText, rangeText, type Range } from '../lib/timeframe'
   import Icon from './Icon.svelte'
   import Popover from './Popover.svelte'
+  import TimeField from './TimeField.svelte'
 
   let { open = $bindable(false) }: { open?: boolean } = $props()
 
@@ -25,15 +27,19 @@
   /** A range that has no button of its own shows as words on the menu button. */
   let custom = $derived(!(L.preset && BUTTONS.includes(L.preset)))
 
+  // Each time the menu opens, and only then, the fields start at the range on
+  // screen. Untracked: the range moves with the clock and the store, and
+  // reading it here would put the fields back while someone edits them.
   $effect(() => {
-    if (!open) return
-    // Every time it opens: the fields show the range on screen.
+    if (open) untrack(fill)
+  })
+  function fill() {
     const [a, z] = L.window()
     typed = ''
     error = ''
-    fromIn = inputValue(a)
-    toIn = L.moving ? '' : inputValue(z)
-  })
+    fromIn = fieldValue(a)
+    toIn = L.moving ? '' : fieldValue(z)
+  }
 
   function label(r: Range): string {
     if ('preset' in r) return r.preset === 'auto' ? 'all stored lines' : presetText(r.preset)
@@ -58,10 +64,11 @@
   }
 
   function applyFields() {
-    const a = fromIn ? new Date(fromIn).getTime() : NaN
-    const z = toIn ? new Date(toIn).getTime() : null
-    if (Number.isNaN(a)) return void (error = 'Pick a start.')
-    if (z !== null && (Number.isNaN(z) || z <= a)) return void (error = 'The end must come after the start.')
+    const a = parsePoint(fromIn)
+    const z = toIn.trim() ? parsePoint(toIn) : null
+    if (a === null) return void (error = 'The start is not a time Stackline understands, such as 2026-11-10 08:15.')
+    if (toIn.trim() && z === null) return void (error = 'The end is not a time Stackline understands, such as 2026-11-10 09:30.')
+    if (z !== null && z <= a) return void (error = 'The end must come after the start.')
     if (a >= Date.now()) return void (error = 'The start is in the future.')
     L.setRange({ from: a, to: z })
     L.remember(rangeInput(a, z))
@@ -100,7 +107,7 @@
     {:else if preview === ''}
       <div class="note err">Not a range yet. Examples: {EXAMPLES.join(' · ')}</div>
     {:else}
-      <div class="note">For example {#each EXAMPLES as ex, i (ex)}{#if i}, {/if}<button class="ex mono" onclick={() => (typed = ex)}>{ex}</button>{/each}</div>
+      <div class="note">For example {#each EXAMPLES as ex, i (ex)}{#if i}{', '}{/if}<button class="ex mono" onclick={() => (typed = ex)}>{ex}</button>{/each}</div>
     {/if}
 
     <div class="sepl"></div>
@@ -114,11 +121,11 @@
     <div class="sepl"></div>
     <div class="hd">From and to</div>
     <div class="fields">
-      <label class="field">From<input type="datetime-local" bind:value={fromIn} step="60" oninput={() => (error = '')} /></label>
-      <label class="field" title="Leave empty to run until now">To<input type="datetime-local" bind:value={toIn} step="60" oninput={() => (error = '')} /></label>
+      <TimeField label="From" bind:value={fromIn} onenter={applyFields} oninput={() => (error = '')} />
+      <TimeField label="To" bind:value={toIn} empty="until now" onenter={applyFields} oninput={() => (error = '')} />
     </div>
     <div class="row-end">
-      {#if toIn}<button class="btn ghost sm" onclick={() => (toIn = '')}>Until now</button>{:else}<span class="muted hint">No end: the range runs until now.</span>{/if}
+      {#if toIn}<button class="btn ghost sm" onclick={() => (toIn = '')}>Until now</button>{/if}
       <button class="btn pri sm" onclick={applyFields}>Show this range</button>
     </div>
     {#if error}<div class="note err" role="alert">{error}</div>{/if}
@@ -147,10 +154,7 @@
   .steps button:disabled{opacity:.4;cursor:default}
   .chips{display:flex;flex-wrap:wrap;gap:6px;padding:2px 10px 6px}
   .fields{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px;padding:2px 10px}
-  .fields .field{min-width:0}
-  .fields input{height:34px;font-family:var(--mono);font-size:12px;min-width:0;padding:0 6px}
   .row-end{display:flex;justify-content:flex-end;align-items:center;gap:6px;padding:8px 10px 4px}
-  .hint{font-size:11.5px;margin-right:auto}
   .note.err{color:var(--err)}
   .ex{all:unset;cursor:pointer;color:var(--accent);font-size:11.5px}
   .ex:hover{text-decoration:underline}
