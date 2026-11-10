@@ -20,9 +20,11 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   projects: [
-    { name: 'ui', testIgnore: /read-only/, use: { ...devices['Desktop Chrome'], viewport: { width: 1400, height: 900 } } },
+    { name: 'ui', testIgnore: /read-only|swarm\.spec/, use: { ...devices['Desktop Chrome'], viewport: { width: 1400, height: 900 } } },
     // Last, so it sees every Docker call the other tests caused.
     { name: 'read-only', testMatch: /read-only/, dependencies: ['ui'] },
+    // Only with the swarm stack of dev/demo deployed: `--project swarm`, as the CI swarm job runs it.
+    { name: 'swarm', testMatch: /swarm\.spec/ },
   ],
   webServer: {
     command: 'node serve.mjs',

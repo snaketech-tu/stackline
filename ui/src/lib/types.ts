@@ -37,6 +37,8 @@ export interface Snapshot {
 export interface ConnState {
   status: 'connecting' | 'connected' | 'error'; error: string | null; latencyMs: number | null
   endpoint: string | null; updatedAt: number | null; logsSyncedAt: number | null; logErrors: string[]
+  /** The connection reaches another host than its stored logs come from; collecting waits for an answer. */
+  otherHost?: boolean
 }
 
 export interface SshFields { target: string; port?: number | null; identity?: string | null; jump?: string | null; socket: string }
@@ -50,7 +52,11 @@ export interface Settings {
   alertEnabled: boolean; alertWindowMins: number; alertThreshold: number
 }
 
-export interface Meta { version: string; desktop: boolean; storePath: string; platform: string }
+export interface Meta {
+  version: string; desktop: boolean; storePath: string; platform: string
+  /** The settings file could not be read at startup and was set aside. */
+  configWarning?: string | null
+}
 
 export interface Bucket { error: number; warn: number; info: number; debug: number; exc: number }
 export interface Group {

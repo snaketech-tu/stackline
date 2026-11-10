@@ -512,6 +512,21 @@ class AppState {
     this.#timer = setTimeout(() => this.poll(), document.hidden ? Math.max(every, 30000) : every)
   }
 
+  /**
+   * Answers the question about another host behind the active connection:
+   * keep the logs stored from the host before, or delete them.
+   */
+  async acceptHost(keep: boolean) {
+    const id = this.activeId
+    try {
+      await post(`/c/${encodeURIComponent(id)}/host`, { keep })
+      if (this.conn && id === this.activeId) this.conn = { ...this.conn, otherHost: false }
+      this.notify(keep ? 'Kept the old logs. Collecting goes on.' : 'Deleted the old logs. Collecting starts over.', 'ok')
+    } catch (e) {
+      this.notify(this.describe(e), 'err')
+    }
+  }
+
   async reloadConnections() {
     this.connections = await api<Connection[]>('/connections')
     if (!this.connections.some((c) => c.id === this.activeId) && this.connections[0]) this.select(this.connections[0].id)

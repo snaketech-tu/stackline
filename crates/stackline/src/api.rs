@@ -50,6 +50,7 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/c/{id}/snapshot", get(snapshot))
         .route("/c/{id}/pins", put(put_pins))
         .route("/c/{id}/collect", put(put_collect))
+        .route("/c/{id}/host", post(accept_host))
         .route("/c/{id}/usage", get(usage))
         .route("/c/{id}/usage/clear", post(clear_usage))
         .route("/c/{id}/logs", get(logs))
@@ -76,6 +77,7 @@ async fn meta(st: St) -> Json<Value> {
         "desktop": st.desktop,
         "storePath": st.manager.store_path().display().to_string(),
         "platform": std::env::consts::OS,
+        "configWarning": st.manager.config_warning,
     }))
 }
 
@@ -197,6 +199,24 @@ async fn put_pins(st: St, Path(id): Path<String>, Json(pins): Json<Vec<String>>)
     Ok(Json(clean))
 }
 
+#[derive(Deserialize)]
+struct HostInput {
+    /// Keep the lines stored from the host before, next to the new ones.
+    keep: bool,
+}
+
+/// Answers the question the UI asks when a connection reaches another host
+/// than its stored lines come from: delete those lines, or keep them.
+async fn accept_host(st: St, Path(id): Path<String>, Json(input): Json<HostInput>) -> Result<StatusCode, ApiError> {
+    let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
+    let identity = rt.identity().ok_or_else(|| ApiError(StatusCode::SERVICE_UNAVAILABLE, "Not connected yet.".into()))?;
+    let store = st.manager.store.clone();
+    // Deleting a large store takes a while; keep it off the async workers.
+    tokio::task::spawn_blocking(move || store.accept_host(&id, &identity, input.keep)).await.map_err(|e| anyhow::anyhow!(e))??;
+    rt.host_accepted();
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Chooses which services of a connection have their logs collected.
 async fn put_collect(st: St, Path(id): Path<String>, Json(c): Json<Collect>) -> Result<Json<Collect>, ApiError> {
     if !st.manager.config().connections.iter().any(|x| x.id == id) {
@@ -313,8 +333,7 @@ async fn deploys(st: St, Path(id): Path<String>, Query(p): Query<LogParams>) -> 
     let store = st.manager.store.clone();
     let now = chrono::Utc::now().timestamp_micros();
     let out = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<Value>> {
-        let mut events: Vec<_> =
-            store.events(&id, &f, 5000)?.into_iter().filter(|e| e.kind == stackline_core::events::Kind::Deploy).collect();
+        let mut events: Vec<_> = store.events_of(&id, &f, &[stackline_core::events::Kind::Deploy], 50)?;
         events.sort_by_key(|e| std::cmp::Reverse(e.ts));
         events.truncate(50);
         let mut next: std::collections::HashMap<String, i64> = Default::default();

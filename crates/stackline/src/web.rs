@@ -32,7 +32,8 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Only answers requests addressed to this machine, and only API calls that carry the session token.
 async fn guard(State(st): State<Arc<AppState>>, req: Request, next: Next) -> Response {
     let host = req.headers().get(header::HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
-    if !st.allowed_hosts.iter().any(|h| h == host) {
+    let ip_host = st.ip_hosts.is_some_and(|port| host.parse::<std::net::SocketAddr>().is_ok_and(|a| a.port() == port));
+    if !ip_host && !st.allowed_hosts.iter().any(|h| h == host) {
         return (StatusCode::FORBIDDEN, "Stackline only answers on its own address").into_response();
     }
     let path = req.uri().path().to_string();

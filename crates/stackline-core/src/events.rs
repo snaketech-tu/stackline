@@ -132,16 +132,9 @@ impl EventPoller {
         events.extend(snap.task_failures.iter().filter(|t| t.node != names.local || t.container.is_empty()).map(from_task));
 
         let (store, conn) = (self.store.clone(), self.conn.clone());
-        tokio::task::spawn_blocking(move || {
-            // A clear while reading: what was read belongs to the lines just deleted.
-            if store.epoch() != epoch {
-                return Ok(0);
-            }
-            let n = store.insert_events(&conn, &events)?;
-            store.set_cursor(&conn, CURSOR, now)?;
-            Ok(n)
-        })
-        .await?
+        // A clear while reading: what was read belongs to the lines just deleted.
+        let n = tokio::task::spawn_blocking(move || store.store_events(&conn, &events, Some(now), epoch)).await??;
+        Ok(n.unwrap_or(0))
     }
 }
 
