@@ -107,12 +107,52 @@ jobs:
         working-directory: e2e
       - name: Wait until the demo has logged every kind of error
         run: timeout 90 sh -c 'until docker logs demo-worker-1 2>&1 | grep -q import-catalog; do sleep 2; done'
-      - run: npx playwright test
+      - run: npx playwright test --project ui --project read-only
         working-directory: e2e
       - uses: actions/upload-artifact@v7
         if: failure()
         with:
           name: e2e-report
+          path: |
+            e2e/playwright-report
+            e2e/test-results
+          retention-days: 7
+
+  e2e-swarm:
+    needs: ui
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: ui/dist
+      - name: Start the swarm demo stack
+        working-directory: dev/demo
+        run: |
+          docker pull -q mirror.gcr.io/library/alpine:3.20 && docker tag mirror.gcr.io/library/alpine:3.20 alpine:3.20 || docker pull -q alpine:3.20
+          docker swarm init
+          docker stack deploy --resolve-image never -c stack.yaml shop
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p stackline
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - run: npm ci
+        working-directory: e2e
+      - run: npx playwright install --with-deps chromium
+        working-directory: e2e
+      - name: Wait until every replica runs
+        run: timeout 120 sh -c 'until docker service ls --filter name=shop_api --format "{{.Replicas}}" | grep -q "3/3"; do sleep 2; done'
+      - run: npx playwright test --project swarm
+        working-directory: e2e
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: e2e-swarm-report
           path: |
             e2e/playwright-report
             e2e/test-results
