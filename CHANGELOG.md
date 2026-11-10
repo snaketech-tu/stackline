@@ -3,7 +3,7 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
-## Unreleased
+## 0.6.0
 
 Stackline now works like Kubri: lists you can drive with the keyboard, an inspector beside the list, and a log workspace that keeps running while you look around. Read-only is now a switch per connection, and with it off Stackline can restart, stop, start and scale services.
 
