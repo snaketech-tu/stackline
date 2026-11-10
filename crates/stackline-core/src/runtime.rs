@@ -17,7 +17,7 @@ use crate::docker::{DockerClient, Endpoint};
 use crate::events::EventPoller;
 use crate::model::Snapshot;
 use crate::snapshot::{self, Options};
-use crate::store::Store;
+use crate::store::{HostCheck, Store};
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -37,6 +37,10 @@ pub struct ConnState {
     pub updated_at: Option<i64>,
     pub logs_synced_at: Option<i64>,
     pub log_errors: Vec<String>,
+    /// The connection now reaches another host or swarm than its stored
+    /// lines come from. Nothing is collected until the user decides whether
+    /// the old lines stay ([`crate::store::Store::accept_host`]).
+    pub other_host: bool,
 }
 
 /// One opened connection.
@@ -65,6 +69,7 @@ impl Runtime {
                 updated_at: None,
                 logs_synced_at: None,
                 log_errors: vec![],
+                other_host: false,
             }),
             client: tokio::sync::Mutex::new(None),
             tasks: Mutex::new(vec![]),
@@ -79,6 +84,16 @@ impl Runtime {
 
     pub fn state(&self) -> ConnState {
         self.state.read().unwrap().clone()
+    }
+
+    /// The host this connection reaches now, as the store remembers hosts.
+    pub fn identity(&self) -> Option<String> {
+        self.snapshot()?.identity()
+    }
+
+    /// The user answered the question about another host: collecting goes on.
+    pub fn host_accepted(&self) {
+        self.state.write().unwrap().other_host = false;
     }
 
     /// Reads the full configuration of a service by its full name.
@@ -328,14 +343,18 @@ impl Manager {
                     // Checked when the identity is first seen or changes, not on every poll.
                     if let Some(identity) = snap.identity().filter(|i| bound.as_ref() != Some(i)) {
                         let (store, conn, id2) = (m.store.clone(), r.cfg.id.clone(), identity.clone());
-                        // Clearing a large store takes a while; keep it off the async workers.
-                        match tokio::task::spawn_blocking(move || store.bind_host(&conn, &id2)).await {
-                            Ok(Ok(cleared)) => {
-                                if cleared {
-                                    tracing::info!("{} now reaches another host; its stored logs were cleared", r.cfg.name);
-                                    collector = Collector::new(&r.cfg.id, m.store.clone());
-                                    events = EventPoller::new(&r.cfg.id, m.store.clone());
+                        match tokio::task::spawn_blocking(move || store.check_host(&conn, &id2)).await {
+                            Ok(Ok(HostCheck::Changed)) => {
+                                // Nothing is read until the user says what happens to the old
+                                // lines; asked again on every poll until then.
+                                if !std::mem::replace(&mut r.state.write().unwrap().other_host, true) {
+                                    tracing::warn!("{} now reaches another host; collecting waits for your answer", r.cfg.name);
                                 }
+                                tokio::time::sleep(Duration::from_secs(settings.log_poll_secs.max(1) as u64)).await;
+                                continue;
+                            }
+                            Ok(Ok(_)) => {
+                                r.state.write().unwrap().other_host = false;
                                 bound = Some(identity);
                             }
                             Ok(Err(e)) => tracing::warn!("could not check the host of {}: {e:#}", r.cfg.name),

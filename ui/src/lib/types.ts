@@ -37,6 +37,8 @@ export interface Snapshot {
 export interface ConnState {
   status: 'connecting' | 'connected' | 'error'; error: string | null; latencyMs: number | null
   endpoint: string | null; updatedAt: number | null; logsSyncedAt: number | null; logErrors: string[]
+  /** The connection reaches another host than its stored logs come from; collecting waits for an answer. */
+  otherHost?: boolean
 }
 
 export interface SshFields { target: string; port?: number | null; identity?: string | null; jump?: string | null; socket: string }
