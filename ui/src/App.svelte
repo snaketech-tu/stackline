@@ -127,6 +127,14 @@
         {#if app.conn?.status === 'error'}
           <div class="err-banner"><b>Connection lost.</b><span>{app.conn.error} Showing the last known state.</span></div>
         {/if}
+        {#if app.conn?.otherHost}
+          <div class="warn-banner host-banner" role="alert">
+            <span><b>{app.active?.name ?? 'This connection'} now reaches another server.</b><br /><span class="muted" style="font-size:12.5px">The stored logs come from the server it reached before. No logs are collected until you choose what happens to them.</span></span>
+            <span class="spacer"></span>
+            <button class="btn sm" onclick={() => app.acceptHost(true)}>Keep the old logs</button>
+            <button class="btn sm danger" onclick={() => app.acceptHost(false)}>Delete the old logs</button>
+          </div>
+        {/if}
         <!-- Views start fresh for each connection, so nothing from another host lingers. -->
         {#key app.activeId}
           {#if app.view === 'overview'}<Overview />

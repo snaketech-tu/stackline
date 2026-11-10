@@ -8,7 +8,14 @@ its GitHub release, and Stackline shows it in the update dialog.
 ### Security
 - **SSH connections no longer open a port on this computer.** Stackline reached a server's Docker through a local TCP port that any program on the computer could also use, and a web page could try to. Whoever reaches that port controls the server's Docker. On macOS and Linux the connection now goes through a socket file in a folder only you can open, removed when Stackline stops. Windows still uses a local port for now
 
+### Changed
+- **A connection that reaches another server no longer deletes its logs by itself.** When the server behind a connection changes (its address was edited, an SSH alias points elsewhere, the swarm was set up again), Stackline stops collecting and asks: keep the old logs, or delete them. Before, they were deleted without asking
+- **At the size limit, a busy server no longer pushes out the logs of a quiet one.** Each connection gets an equal share of the space, and only connections above their share lose their oldest lines
+
 ### Fixed
+- **"Clear stored logs" during a read could leave part of that read behind**, and those lines then kept the cleared range from filling again
+- **A replica read for the first time held up all the others.** Reading hours of a busy replica can take minutes; other replicas and container events now go on being read meanwhile
+- **Deploys could go missing from the Overview** when a service crashed thousands of times after them
 - **A Docker that accepted a request and then never answered stopped log collection for good.** Requests now give up after 30 seconds without an answer and are tried again on the next poll
 
 ## 0.5.1
