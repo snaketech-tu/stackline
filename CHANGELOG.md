@@ -3,7 +3,7 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
-## Unreleased
+## 0.7.0
 
 ### Added
 - **Query any time range on the Logs page.** Next to the range buttons, the clock button (or `t`) opens a menu where you can type a range (`90m`, `yesterday`, `14:00-15:30`, `since 8:00`, `9.11. 8:00 - 12:00`, `14:05 ± 5m`, `now-6h to now-2h`), pick a quick one (5m to 3d, today, yesterday, this week), set exact From and To times, or reuse a recent range. Ctrl K understands the same text and opens the Logs page on that range
@@ -12,6 +12,9 @@ its GitHub release, and Stackline shows it in the update dialog.
 
 ### Changed
 - The Logs page names the range in words (`last 90 minutes`, `yesterday 22:00 – 02:00`) instead of bare clock times, and the download menu does the same
+
+### Fixed
+- **Pages open at the top.** Every page scrolls in the same area, so a page opened where the last one was scrolled to: Preferences, opened from the Logs page, started at its bottom. Each page, and each connection you switch to, now starts at the top
 
 ## 0.6.0
 
