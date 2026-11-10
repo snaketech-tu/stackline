@@ -20,7 +20,7 @@ that opens the dashboard in your browser.
 
 [Download](https://github.com/snaketech-tu/stackline/releases/latest) ·
 [Get started](#get-started) · [Connect a host](#connect-a-host) ·
-[Development](#development) · [Changelog](CHANGELOG.md)
+[Security](#security) · [Development](#development) · [Changelog](CHANGELOG.md)
 
 ## Features
 
