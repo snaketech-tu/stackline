@@ -53,6 +53,24 @@ pub struct Collector {
     store: Arc<Store>,
     states: HashMap<String, SourceState>,
     epoch: u64,
+    /// First reads under way, by source. They run apart from the regular
+    /// polls: reading hours of a busy replica can take minutes, and the other
+    /// replicas and the events must not wait for it.
+    first: HashMap<String, tokio::task::JoinHandle<(SourceState, usize)>>,
+}
+
+/// How many first reads of one connection run at once.
+const FIRST_READS: usize = 2;
+/// How long a poll waits for first reads to finish, so that a quick one
+/// (most of them) is stored by the poll that started it.
+const FIRST_WAIT: Duration = Duration::from_secs(2);
+
+impl Drop for Collector {
+    fn drop(&mut self) {
+        for (_, h) in self.first.drain() {
+            h.abort();
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -65,7 +83,7 @@ pub struct PollReport {
 impl Collector {
     pub fn new(conn: &str, store: Arc<Store>) -> Self {
         let epoch = store.epoch();
-        Self { conn: conn.to_string(), store, states: HashMap::new(), epoch }
+        Self { conn: conn.to_string(), store, states: HashMap::new(), epoch, first: HashMap::new() }
     }
 
     /// Reads new lines from every source. The first read of a new source goes
@@ -79,10 +97,18 @@ impl Collector {
         if refill {
             self.states.clear();
             self.epoch = epoch;
+            // What they read belongs to the lines just cleared.
+            for (_, h) in self.first.drain() {
+                h.abort();
+            }
         }
+        let started = Instant::now();
         let keys: std::collections::HashSet<String> = sources.iter().map(|s| s.key.clone()).collect();
         self.states.retain(|k, _| keys.contains(k));
         for src in sources {
+            if self.first.contains_key(&src.key) {
+                continue;
+            }
             let st = self.states.entry(src.key.clone()).or_insert_with(|| SourceState {
                 assembler: Assembler::new(&src.service),
                 cursor: None,
@@ -112,48 +138,90 @@ impl Collector {
             .filter(|(_, s)| s.src.running || s.last_read.is_none_or(|t| t.elapsed() > Duration::from_secs(60)))
             .map(|(k, _)| k.clone())
             .collect();
-        let mut taken: Vec<SourceState> = due.iter().filter_map(|k| self.states.remove(k)).collect();
+        let taken: Vec<SourceState> = due.iter().filter_map(|k| self.states.remove(k)).collect();
         let mut report = PollReport { sources: taken.len(), ..Default::default() };
+        let (fresh, known): (Vec<SourceState>, Vec<SourceState>) = taken.into_iter().partition(|st| st.cursor.is_none());
+
+        // First reads start in the background, a few at a time; the rest wait for a later poll.
+        for st in fresh {
+            if self.first.len() >= FIRST_READS {
+                self.states.insert(st.src.key.clone(), st);
+                continue;
+            }
+            let (conn, store, client) = (self.conn.clone(), self.store.clone(), client.clone());
+            let key = st.src.key.clone();
+            self.first.insert(key, tokio::spawn(read_one(client, store, conn, st, now, retention_us)));
+        }
 
         let conn = self.conn.clone();
         let store = self.store.clone();
-        let results: Vec<(SourceState, usize)> = futures_util::stream::iter(taken.drain(..))
-            .map(|mut st| {
-                let (conn, store, client) = (conn.clone(), store.clone(), client.clone());
-                async move {
-                    let n = match read_source(&client, &store, &conn, &mut st, now, retention_us).await {
-                        Ok(n) => {
-                            st.error = None;
-                            n
-                        }
-                        Err(e) => {
-                            st.error = Some(format!("{}: {e:#}", st.src.service));
-                            // Batches stored before the error stay stored: go on
-                            // after them, or the next poll stores them twice.
-                            // A half-built entry is dropped for the same reason.
-                            if st.stored > st.cursor {
-                                st.cursor = st.stored;
-                            }
-                            st.assembler = Assembler::new(&st.src.service);
-                            0
-                        }
-                    };
-                    st.last_read = Some(Instant::now());
-                    (st, n)
-                }
-            })
+        let results: Vec<(SourceState, usize)> = futures_util::stream::iter(known)
+            .map(|st| read_one(client.clone(), store.clone(), conn.clone(), st, now, retention_us))
             .buffer_unordered(6)
             .collect()
             .await;
         for (st, n) in results {
-            report.entries += n;
-            if let Some(e) = &st.error {
-                report.errors.push(e.clone());
+            self.done(st, n, &mut report);
+        }
+
+        // First reads that finished, waiting a moment for quick ones.
+        let deadline = started + FIRST_WAIT;
+        let keys: Vec<String> = self.first.keys().cloned().collect();
+        for key in keys {
+            let Some(h) = self.first.get_mut(&key) else { continue };
+            match tokio::time::timeout_at(deadline.into(), h).await {
+                Err(_) => continue,
+                Ok(r) => {
+                    self.first.remove(&key);
+                    // A read that panicked is started again from the stored cursor.
+                    if let Ok((st, n)) = r
+                        && st.epoch == self.epoch
+                    {
+                        self.done(st, n, &mut report);
+                    }
+                }
             }
-            self.states.insert(st.src.key.clone(), st);
         }
         report
     }
+
+    fn done(&mut self, st: SourceState, n: usize, report: &mut PollReport) {
+        report.entries += n;
+        if let Some(e) = &st.error {
+            report.errors.push(e.clone());
+        }
+        self.states.insert(st.src.key.clone(), st);
+    }
+}
+
+/// Reads one source and says how many entries it stored.
+async fn read_one(
+    client: DockerClient,
+    store: Arc<Store>,
+    conn: String,
+    mut st: SourceState,
+    now: i64,
+    retention_us: i64,
+) -> (SourceState, usize) {
+    let n = match read_source(&client, &store, &conn, &mut st, now, retention_us).await {
+        Ok(n) => {
+            st.error = None;
+            n
+        }
+        Err(e) => {
+            st.error = Some(format!("{}: {e:#}", st.src.service));
+            // Batches stored before the error stay stored: go on
+            // after them, or the next poll stores them twice.
+            // A half-built entry is dropped for the same reason.
+            if st.stored > st.cursor {
+                st.cursor = st.stored;
+            }
+            st.assembler = Assembler::new(&st.src.service);
+            0
+        }
+    };
+    st.last_read = Some(Instant::now());
+    (st, n)
 }
 
 async fn read_source(
@@ -306,19 +374,11 @@ async fn flush(store: &Arc<Store>, conn: &str, st: &mut SourceState, entries: &m
         (t, _) => t,
     };
     let (store, conn, src, epoch) = (store.clone(), conn.to_string(), st.src.clone(), st.epoch);
-    tokio::task::spawn_blocking(move || -> Result<()> {
-        // The store was cleared during this read: the next poll starts over.
-        if store.epoch() != epoch {
-            return Ok(());
-        }
-        store.insert(&conn, &src, &batch)?;
-        if let Some(ts) = last_ts {
-            store.set_cursor(&conn, &src.key, ts)?;
-        }
-        Ok(())
-    })
-    .await??;
-    st.stored = last_ts.or(st.stored);
+    // A store cleared during this read keeps nothing of it: the next poll starts over.
+    let stored = tokio::task::spawn_blocking(move || store.store_batch(&conn, &src, &batch, last_ts, epoch)).await??;
+    if stored {
+        st.stored = last_ts.or(st.stored);
+    }
     Ok(n)
 }
 
@@ -483,6 +543,66 @@ mod tests {
         assert_eq!(r.entries, 5, "{r:?}");
         assert!(!docker.paths()[0].contains("tail="));
         assert_eq!(stored(&store), 5);
+    }
+
+    #[tokio::test]
+    async fn a_slow_first_read_does_not_hold_up_the_other_replicas() {
+        // Answers every log request at once with one new line, except those of
+        // the replica `slow`, which take 4 seconds: a first read of hours of logs.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap().to_string();
+        let line = Arc::new(Mutex::new(0i64));
+        let l = line.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else { return };
+                let l = l.clone();
+                tokio::spawn(async move {
+                    let mut buf = Vec::new();
+                    let mut chunk = [0u8; 1024];
+                    while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match sock.read(&mut chunk).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => buf.extend_from_slice(&chunk[..n]),
+                        }
+                    }
+                    let head = String::from_utf8_lossy(&buf).to_string();
+                    if head.contains("/slow/") {
+                        tokio::time::sleep(Duration::from_secs(4)).await;
+                    }
+                    let ts = *l.lock().unwrap();
+                    let body = frames(&[(ts, "INFO hello".to_string())], "/");
+                    let res = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                    let _ = sock.write_all(res.as_bytes()).await;
+                    let _ = sock.write_all(&body).await;
+                });
+            }
+        });
+        let client = DockerClient::new(Endpoint::Tcp(addr));
+        let store = Arc::new(Store::open_in_memory().unwrap());
+        let now = chrono::Utc::now().timestamp_micros();
+        let fast = LogSource { key: "fast".into(), ..source() };
+        let slow = LogSource { key: "slow".into(), service: "shop_worker".into(), ..source() };
+        let mut c = Collector::new("conn", store.clone());
+
+        *line.lock().unwrap() = now - 10_000_000;
+        let started = Instant::now();
+        let r = c.poll(&client, vec![fast.clone(), slow.clone()], RETENTION).await;
+        assert!(started.elapsed() < Duration::from_secs(3), "the poll waited {:?} for the slow first read", started.elapsed());
+        assert_eq!(r.entries, 1, "{r:?}");
+
+        // The next polls read the fast replica again while the slow one is still busy.
+        *line.lock().unwrap() = now - 5_000_000;
+        let started = Instant::now();
+        let r = c.poll(&client, vec![fast.clone(), slow.clone()], RETENTION).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(r.entries, 1, "{r:?}");
+
+        // Once done, the slow replica's lines are stored and it is polled like any other.
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        c.poll(&client, vec![fast, slow], RETENTION).await;
+        assert!(store.cursor("conn", "slow").unwrap().is_some());
+        assert_eq!(stored(&store), 3);
     }
 
     #[tokio::test]

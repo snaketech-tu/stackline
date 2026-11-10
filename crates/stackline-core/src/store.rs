@@ -43,6 +43,9 @@ const IDLE_READERS: usize = 4;
 
 /// Keeps the search index in step with new lines. Their per-minute counts
 /// are added by [`Store::insert`], once per minute instead of once per line.
+const SET_CURSOR: &str = "INSERT INTO cursors (conn, source, ts) VALUES (?1, ?2, ?3)
+     ON CONFLICT (conn, source) DO UPDATE SET ts = excluded.ts";
+
 const INSERT_TRIGGER: &str = "CREATE TRIGGER entries_ai AFTER INSERT ON entries BEGIN
     INSERT INTO entries_fts (rowid, text) VALUES (new.id, new.text);
 END;";
@@ -321,6 +324,36 @@ fn new_groups(db: &Connection, conn: &str, now: i64, oldest: Option<i64>) -> Res
     Ok(out)
 }
 
+/// What [`Store::check_host`] found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostCheck {
+    /// The host the stored lines come from.
+    Same,
+    /// The first host seen for the connection; now remembered.
+    First,
+    /// Another host than the stored lines come from.
+    Changed,
+}
+
+/// How many lines each connection gives up so that `keep` lines are left:
+/// the lines kept are shared out equally, and a connection with fewer lines
+/// than its share keeps all of them, which leaves more for the others.
+fn over_share(counts: &[(String, u64)], keep: u64) -> Vec<(String, u64)> {
+    let mut sorted: Vec<&(String, u64)> = counts.iter().collect();
+    sorted.sort_by_key(|(_, n)| *n);
+    let mut left = keep;
+    let mut out = Vec::new();
+    for (i, (conn, n)) in sorted.iter().enumerate() {
+        let share = left / (sorted.len() - i) as u64;
+        let kept = (*n).min(share);
+        left -= kept;
+        if *n > kept {
+            out.push((conn.clone(), n - kept));
+        }
+    }
+    out
+}
+
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
 }
@@ -591,53 +624,83 @@ impl Store {
         }
         let mut db = self.db.lock().unwrap();
         let tx = db.transaction()?;
-        {
-            let mut ins = tx.prepare_cached(
-                "INSERT INTO entries (conn, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            )?;
-            let mut pat = tx.prepare_cached(
-                "INSERT INTO patterns (conn, fp, pattern) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (conn, fp) DO UPDATE SET pattern = excluded.pattern WHERE pattern != excluded.pattern",
-            )?;
-            // Counts per minute: debug, info, warn, error, then the same with a stack trace.
-            let mut minutes: HashMap<i64, [i64; 8]> = HashMap::new();
-            for e in entries {
-                let m = minutes.entry(e.ts.div_euclid(MINUTE)).or_default();
-                let l = e.level.as_i64() as usize - 1;
-                m[l] += 1;
-                m[4 + l] += e.exc as i64;
-                ins.execute(params![
-                    conn,
-                    e.ts,
-                    src.stack,
-                    src.service,
-                    src.replica,
-                    src.node,
-                    src.key,
-                    if e.stream == StreamKind::Stderr { 2 } else { 1 },
-                    e.level.as_i64(),
-                    e.exc as i64,
-                    e.lines,
-                    e.fp,
-                    e.text,
-                    e.raw,
-                ])?;
-                if let (Some(fp), Some(p)) = (&e.fp, &e.pattern) {
-                    pat.execute(params![conn, fp, p])?;
-                }
-            }
-            let mut add = tx.prepare_cached(ADD_MINUTE)?;
-            for (minute, c) in minutes {
-                for (service, stack) in [(src.service.as_str(), src.stack.as_str()), ("", "")] {
-                    add.execute(params![conn, minute, service, stack, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])?;
-                }
-            }
-        }
+        insert_entries(&tx, conn, src, entries)?;
         tx.commit()?;
         Ok(())
     }
 
+    /// Stores lines of a read and moves the source's cursor in one step,
+    /// unless the lines of the connection were cleared since `epoch` (see
+    /// [`Store::epoch`]): then nothing is stored and false comes back. The
+    /// check holds the write lock, so a clear either comes first and the
+    /// batch is dropped, or comes after and deletes it with the rest.
+    pub fn store_batch(&self, conn: &str, src: &LogSource, entries: &[LogEntry], cursor: Option<i64>, epoch: u64) -> Result<bool> {
+        let mut db = self.db.lock().unwrap();
+        if self.epoch() != epoch {
+            return Ok(false);
+        }
+        let tx = db.transaction()?;
+        insert_entries(&tx, conn, src, entries)?;
+        if let Some(ts) = cursor {
+            tx.execute(SET_CURSOR, params![conn, src.key, ts])?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+}
+
+/// Writes lines, their error patterns and their per-minute counts.
+fn insert_entries(tx: &rusqlite::Transaction<'_>, conn: &str, src: &LogSource, entries: &[LogEntry]) -> Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
+    {
+        let mut ins = tx.prepare_cached(
+            "INSERT INTO entries (conn, ts, stack, service, replica, node, source, stream, level, exc, lines, fp, text, raw)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        )?;
+        let mut pat = tx.prepare_cached(
+            "INSERT INTO patterns (conn, fp, pattern) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (conn, fp) DO UPDATE SET pattern = excluded.pattern WHERE pattern != excluded.pattern",
+        )?;
+        // Counts per minute: debug, info, warn, error, then the same with a stack trace.
+        let mut minutes: HashMap<i64, [i64; 8]> = HashMap::new();
+        for e in entries {
+            let m = minutes.entry(e.ts.div_euclid(MINUTE)).or_default();
+            let l = e.level.as_i64() as usize - 1;
+            m[l] += 1;
+            m[4 + l] += e.exc as i64;
+            ins.execute(params![
+                conn,
+                e.ts,
+                src.stack,
+                src.service,
+                src.replica,
+                src.node,
+                src.key,
+                if e.stream == StreamKind::Stderr { 2 } else { 1 },
+                e.level.as_i64(),
+                e.exc as i64,
+                e.lines,
+                e.fp,
+                e.text,
+                e.raw,
+            ])?;
+            if let (Some(fp), Some(p)) = (&e.fp, &e.pattern) {
+                pat.execute(params![conn, fp, p])?;
+            }
+        }
+        let mut add = tx.prepare_cached(ADD_MINUTE)?;
+        for (minute, c) in minutes {
+            for (service, stack) in [(src.service.as_str(), src.stack.as_str()), ("", "")] {
+                add.execute(params![conn, minute, service, stack, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])?;
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Store {
     pub fn cursor(&self, conn: &str, source: &str) -> Result<Option<i64>> {
         let db = self.db.lock().unwrap();
         Ok(db.query_row("SELECT ts FROM cursors WHERE conn = ?1 AND source = ?2", params![conn, source], |r| r.get(0)).optional()?)
@@ -645,11 +708,7 @@ impl Store {
 
     pub fn set_cursor(&self, conn: &str, source: &str, ts: i64) -> Result<()> {
         let db = self.db.lock().unwrap();
-        db.execute(
-            "INSERT INTO cursors (conn, source, ts) VALUES (?1, ?2, ?3)
-             ON CONFLICT (conn, source) DO UPDATE SET ts = excluded.ts",
-            params![conn, source, ts],
-        )?;
+        db.execute(SET_CURSOR, params![conn, source, ts])?;
         Ok(())
     }
 
@@ -709,7 +768,18 @@ impl Store {
     /// Stores events read from Docker; ones already stored are skipped.
     /// Returns how many were new.
     pub fn insert_events(&self, conn: &str, events: &[Event]) -> Result<usize> {
+        let epoch = self.epoch();
+        Ok(self.store_events(conn, events, None, epoch)?.unwrap_or(0))
+    }
+
+    /// Like [`Store::insert_events`], and moves the event cursor to `cursor`
+    /// in the same step, unless the connection was cleared since `epoch`
+    /// (then None comes back and nothing is stored).
+    pub fn store_events(&self, conn: &str, events: &[Event], cursor: Option<i64>, epoch: u64) -> Result<Option<usize>> {
         let mut db = self.db.lock().unwrap();
+        if self.epoch() != epoch {
+            return Ok(None);
+        }
         let tx = db.transaction()?;
         let mut n = 0;
         {
@@ -733,15 +803,27 @@ impl Store {
                 ])?;
             }
         }
+        if let Some(ts) = cursor {
+            tx.execute(SET_CURSOR, params![conn, crate::events::CURSOR, ts])?;
+        }
         tx.commit()?;
-        Ok(n)
+        Ok(Some(n))
     }
 
     /// The newest events in the filter's time range and sources, oldest
     /// first. Levels, error groups and search words do not apply to events.
     pub fn events(&self, conn: &str, f: &LogFilter, limit: usize) -> Result<Vec<Event>> {
+        self.events_of(conn, f, &[], limit)
+    }
+
+    /// Like [`Store::events`], only events of these kinds (all when empty).
+    pub fn events_of(&self, conn: &str, f: &LogFilter, kinds: &[Kind], limit: usize) -> Result<Vec<Event>> {
         let f = LogFilter { fps: vec![], text: vec![], levels: vec![], no_levels: false, ..f.clone() };
-        let (w, mut p) = f.where_clause(conn, false);
+        let (mut w, mut p) = f.where_clause(conn, false);
+        if !kinds.is_empty() {
+            w.push_str(&format!(" AND kind IN ({})", vec!["?"; kinds.len()].join(",")));
+            p.extend(kinds.iter().map(|k| Sql::Text(k.as_str().into())));
+        }
         p.push(Sql::Integer(limit as i64));
         self.read(|db| {
             let mut stmt = db.prepare(&format!(
@@ -822,31 +904,40 @@ impl Store {
                 .execute("DELETE FROM minutes WHERE conn = ?1 AND minute < ?2", params![conn, before.div_euclid(MINUTE)])?;
         }
         self.db.lock().unwrap().execute("DELETE FROM events WHERE ts < ?1", params![before])?;
-        // Over the size limit: drop the oldest lines first, down to 90% of the
-        // limit so this does not run again a minute later. Ids grow with
-        // arrival, so the rowid order finds them without sorting the table.
-        // Deleted lines stay in the search index until it is merged, so the
-        // index is optimized before the size is measured again.
+        // Over the size limit: drop the oldest lines, down to 90% of the
+        // limit so this does not run again a minute later. Every connection
+        // gets an equal share of what is kept, and only connections above
+        // their share give up lines: a chatty server must not push out the
+        // whole history of a quiet one. Deleted lines stay in the search index
+        // until it is merged, so the index is merged before the size is
+        // measured again.
         for _ in 0..4 {
             let live = live_bytes(&self.db.lock().unwrap())?;
             if live <= max_bytes {
                 break;
             }
-            let total: u64 = self.db.lock().unwrap().query_row("SELECT COUNT(*) FROM entries", [], |r| r.get(0))?;
+            let counts: Vec<(String, u64)> = {
+                let db = self.db.lock().unwrap();
+                let mut st = db.prepare("SELECT conn, COUNT(*) FROM entries GROUP BY conn")?;
+                st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+            };
+            let total: u64 = counts.iter().map(|(_, n)| n).sum();
             if total == 0 {
                 break;
             }
             let target = max_bytes / 10 * 9;
-            let mut left = ((total as u128 * (live - target) as u128).div_ceil(live as u128) as u64).clamp(1, total);
-            while left > 0 {
-                let n = self.db.lock().unwrap().execute(
-                    "DELETE FROM entries WHERE id IN (SELECT id FROM entries ORDER BY id LIMIT ?1)",
-                    params![left.min(BATCH as u64)],
-                )? as u64;
-                deleted += n;
-                left = left.saturating_sub(n);
-                if n == 0 {
-                    break;
+            let left = ((total as u128 * (live - target) as u128).div_ceil(live as u128) as u64).clamp(1, total);
+            for (conn, mut drop) in over_share(&counts, total - left) {
+                while drop > 0 {
+                    let n = self.db.lock().unwrap().execute(
+                        "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE conn = ?1 ORDER BY ts LIMIT ?2)",
+                        params![conn, drop.min(BATCH as u64)],
+                    )? as u64;
+                    deleted += n;
+                    drop = drop.saturating_sub(n);
+                    if n == 0 {
+                        break;
+                    }
                 }
             }
             self.merge_index()?;
@@ -995,26 +1086,34 @@ impl Store {
         self.read(|db| error_rate(db, conn, from, to))
     }
 
-    /// Remembers which host or swarm a connection's logs come from. When a
-    /// connection now reaches a different one (its address was edited, or an
-    /// alias points elsewhere), the old lines are deleted so the two never mix.
-    /// Returns true when lines were deleted.
-    pub fn bind_host(&self, conn: &str, identity: &str) -> Result<bool> {
+    /// Checks which host or swarm a connection's logs come from against the
+    /// one remembered. The first one seen is remembered. A different one is
+    /// only reported: its lines must not mix with the old ones, and whether
+    /// the old ones go is the user's call ([`Store::accept_host`]).
+    pub fn check_host(&self, conn: &str, identity: &str) -> Result<HostCheck> {
         let db = self.db.lock().unwrap();
         let known: Option<String> = db.query_row("SELECT identity FROM hosts WHERE conn = ?1", params![conn], |r| r.get(0)).optional()?;
-        if known.as_deref() == Some(identity) {
-            return Ok(false);
+        match known {
+            Some(k) if k == identity => Ok(HostCheck::Same),
+            Some(_) => Ok(HostCheck::Changed),
+            None => {
+                db.execute("INSERT INTO hosts (conn, identity) VALUES (?1, ?2)", params![conn, identity])?;
+                Ok(HostCheck::First)
+            }
         }
-        let changed = known.is_some();
-        drop(db);
-        if changed {
+    }
+
+    /// Makes `identity` the host of a connection. With `keep_old` false the
+    /// lines from the host before are deleted first.
+    pub fn accept_host(&self, conn: &str, identity: &str, keep_old: bool) -> Result<()> {
+        if !keep_old {
             self.clear(Some(conn))?;
         }
         self.db.lock().unwrap().execute(
             "INSERT INTO hosts (conn, identity) VALUES (?1, ?2) ON CONFLICT (conn) DO UPDATE SET identity = excluded.identity",
             params![conn, identity],
         )?;
-        Ok(changed)
+        Ok(())
     }
 
     pub fn stats(&self) -> Result<StoreStats> {
@@ -1037,7 +1136,12 @@ impl Store {
     pub fn clear(&self, conn: Option<&str>) -> Result<()> {
         // First, so lines a collector is reading right now are not stored
         // after the clear with a cursor that would skip everything before them.
-        self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Under the write lock: a batch being stored right now either lands
+        // before this and is deleted below, or sees the new epoch and is dropped.
+        {
+            let _db = self.db.lock().unwrap();
+            self.epoch.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         let deleted = self.delete_entries(conn, None)?;
         if deleted > 0 {
             self.merge_index()?;
@@ -1493,7 +1597,10 @@ fn row_to_entry(r: &rusqlite::Row<'_>) -> rusqlite::Result<EntryOut> {
 }
 
 fn csv(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_string() }
+    // A cell starting like a formula is run by spreadsheet apps when the file
+    // is opened; a log line must never do that, so it starts with ' instead.
+    let s = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{s}") } else { s.to_string() };
+    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s }
 }
 
 #[cfg(test)]
@@ -1660,6 +1767,87 @@ mod tests {
     }
 
     #[test]
+    fn csv_cells_never_start_a_formula() {
+        assert_eq!(csv("=HYPERLINK(\"http://x\")"), "\"'=HYPERLINK(\"\"http://x\"\")\"");
+        assert_eq!(csv("-1 retries left"), "'-1 retries left");
+        assert_eq!(csv("@admin logged in"), "'@admin logged in");
+        assert_eq!(csv("plain, text"), "\"plain, text\"");
+        assert_eq!(csv("ok"), "ok");
+    }
+
+    #[test]
+    fn deploys_are_found_among_many_other_events() {
+        let store = Store::open_in_memory().unwrap();
+        let ev = |key: String, ts: i64, kind: Kind| Event {
+            key,
+            ts,
+            stack: "demo".into(),
+            service: "demo_app".into(),
+            replica: "1".into(),
+            node: "box".into(),
+            source: "c0".into(),
+            kind,
+            exit_code: None,
+            detail: None,
+        };
+        let mut batch = vec![ev("deploy".into(), 10, Kind::Deploy)];
+        batch.extend((0..6000).map(|i| ev(format!("crash{i}"), 100 + i, Kind::Crash)));
+        store.insert_events("c1", &batch).unwrap();
+        let all = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        let deploys = store.events_of("c1", &all, &[Kind::Deploy], 50).unwrap();
+        assert_eq!(deploys.iter().map(|e| e.key.as_str()).collect::<Vec<_>>(), ["deploy"]);
+        assert_eq!(store.events_of("c1", &all, &[], 10).unwrap().len(), 10);
+    }
+
+    #[test]
+    fn a_batch_read_before_a_clear_is_not_stored_after_it() {
+        let store = Store::open_in_memory().unwrap();
+        let epoch = store.epoch();
+        assert!(store.store_batch("c1", &src("shop_api", "1"), &entries(&[(10, "before")]), Some(10), epoch).unwrap());
+        // "Clear stored logs" while a read of the same source is under way.
+        store.clear(Some("c1")).unwrap();
+        let stored = store.store_batch("c1", &src("shop_api", "1"), &entries(&[(20, "read before the clear")]), Some(20), epoch).unwrap();
+        assert!(!stored);
+        let all = LogFilter { from: 0, to: 100, ..Default::default() };
+        assert_eq!(store.query("c1", &all, 1, 10).unwrap().entries.len(), 0);
+        // No cursor either, so the next read starts over and fills the range again.
+        assert_eq!(store.cursor("c1", "shop_api-1").unwrap(), None);
+        assert_eq!(store.store_events("c1", &[], Some(20), epoch).unwrap(), None);
+        assert_eq!(store.cursor("c1", crate::events::CURSOR).unwrap(), None);
+    }
+
+    #[test]
+    fn a_chatty_connection_does_not_push_out_a_quiet_one() {
+        assert_eq!(over_share(&[("a".into(), 900), ("b".into(), 100)], 500), [("a".to_string(), 500)]);
+        assert_eq!(over_share(&[("a".into(), 900), ("b".into(), 300)], 400), [("b".to_string(), 100), ("a".to_string(), 700)]);
+        let dir = std::env::temp_dir().join(format!("stackline-fair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("logs.db")).unwrap();
+        // The quiet connection logged first, long ago; the chatty one fills the store.
+        store.insert("quiet", &src("db", "1"), &entries(&[(1, "the quiet server's oldest line")])).unwrap();
+        let mut t = 1_000;
+        for round in 0..40 {
+            let lines: Vec<(i64, String)> = (0..2000)
+                .map(|i| {
+                    t += 1;
+                    (t, format!("GET /api/items/{round}-{i} 200 id={:016x}", (round * 2000 + i) as u64 * 2654435761))
+                })
+                .collect();
+            let refs: Vec<(i64, &str)> = lines.iter().map(|(t, l)| (*t, l.as_str())).collect();
+            store.insert("chatty", &src("api", "1"), &entries(&refs)).unwrap();
+        }
+        store.retain(0, 2 << 20).unwrap();
+        let all = LogFilter { from: 0, to: i64::MAX, ..Default::default() };
+        let quiet = store.query("quiet", &all, 1, 10).unwrap();
+        assert_eq!(quiet.entries.len(), 1, "the quiet server lost its history");
+        let chatty = store.query("chatty", &all, 1, 1).unwrap();
+        assert!(chatty.total < 80_000 && chatty.entries[0].ts == t, "the chatty server keeps its newest lines");
+        drop(store);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn picked_stacks_and_services_combine_with_or() {
         let store = Store::open_in_memory().unwrap();
         let base = 1_700_000_000_000_000i64;
@@ -1756,7 +1944,7 @@ mod tests {
     }
 
     #[test]
-    fn a_connection_that_reaches_another_host_drops_the_old_lines() {
+    fn another_host_keeps_the_old_lines_until_the_user_decides() {
         let store = Store::open_in_memory().unwrap();
         let now = 1_700_000_000_000_000i64;
         let s1 = src("shop_api", "1");
@@ -1764,17 +1952,30 @@ mod tests {
         store.insert("c2", &s1, &entries(&[(now - 1_000_000, "2026-10-27 ERROR boom")])).unwrap();
         store.set_cursor("c1", &s1.key, now).unwrap();
         let all = LogFilter { from: 0, to: now, ..Default::default() };
+        let total = |c: &str| store.query(c, &all, 1, 10).unwrap().total;
 
         // The first host seen keeps what is stored.
-        assert!(!store.bind_host("c1", "engine:A").unwrap());
-        assert!(!store.bind_host("c1", "engine:A").unwrap());
-        assert_eq!(store.query("c1", &all, 1, 10).unwrap().total, 1);
+        assert_eq!(store.check_host("c1", "engine:A").unwrap(), HostCheck::First);
+        assert_eq!(store.check_host("c1", "engine:A").unwrap(), HostCheck::Same);
+        assert_eq!(total("c1"), 1);
 
-        // Another host under the same connection: its lines start from scratch.
-        assert!(store.bind_host("c1", "engine:B").unwrap());
-        assert_eq!(store.query("c1", &all, 1, 10).unwrap().total, 0);
+        // Another host under the same connection: reported, nothing deleted.
+        assert_eq!(store.check_host("c1", "engine:B").unwrap(), HostCheck::Changed);
+        assert_eq!(store.check_host("c1", "engine:B").unwrap(), HostCheck::Changed);
+        assert_eq!(total("c1"), 1);
+
+        // "Keep them": the new host is remembered, the old lines stay.
+        store.accept_host("c1", "engine:B", true).unwrap();
+        assert_eq!(store.check_host("c1", "engine:B").unwrap(), HostCheck::Same);
+        assert_eq!(total("c1"), 1);
+
+        // "Delete them": lines and cursors of that connection go, others stay.
+        assert_eq!(store.check_host("c1", "engine:C").unwrap(), HostCheck::Changed);
+        store.accept_host("c1", "engine:C", false).unwrap();
+        assert_eq!(store.check_host("c1", "engine:C").unwrap(), HostCheck::Same);
+        assert_eq!(total("c1"), 0);
         assert_eq!(store.cursor("c1", &s1.key).unwrap(), None);
-        assert_eq!(store.query("c2", &all, 1, 10).unwrap().total, 1, "other connections are untouched");
+        assert_eq!(total("c2"), 1, "other connections are untouched");
     }
 
     #[test]

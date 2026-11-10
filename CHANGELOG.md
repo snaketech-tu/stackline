@@ -7,17 +7,31 @@ its GitHub release, and Stackline shows it in the update dialog.
 
 Stackline now works like Kubri: lists you can drive with the keyboard, an inspector beside the list, and a log workspace that keeps running while you look around. Read-only is now a switch per connection, and with it off Stackline can restart, stop, start and scale services.
 
+### Security
+- **SSH connections no longer open a port on this computer.** Stackline reached a server's Docker through a local TCP port that any program on the computer could also use, and a web page could try to. Whoever reaches that port controls the server's Docker. On macOS and Linux the connection now goes through a socket file in a folder only you can open, removed when Stackline stops. Windows still uses a local port for now
+
 ### Changed
 - **New layout.** The sidebar groups the pages (Overview; Workloads: Stacks, Services, Tasks; Cluster: Nodes; Logs) and lists your pinned services, with a box that finds a page or service by name. The top bar has Back and Forward, the connection, a **stack picker** that narrows every list to one stack, **Search or run a command**, the theme and the read-only switch. A status bar at the bottom shows whether the connection is live and the keys of the page
 - **Stacks, Services, Tasks and Nodes are lists of their own**, each with a filter (`/`), tabs (All, Needs attention, Pinned or Running), sortable columns and an action bar that names the row it acts on. Move with `j`/`k` or the arrow keys; **Enter opens what is inside**: a stack's services, a service's tasks, a node's tasks. Back returns to the list as you left it, filter and cursor included. Filter and tab are kept after a restart
 - **The service panel is now an inspector docked beside the list.** Click a row or press `d`. Moving the cursor takes the inspector along. Its tabs are Overview (with the likely problem of a failing service), Events (deploys, stops and crashes), Config (command, health check, networks, mounts, environment, labels), Logs and Errors. The expand button lets it use the whole page. Nodes get an inspector too
 - **The Tasks page** (Containers on a host without swarm) lists every task with its node, state, exit code, failed attempts, CPU, memory and Docker's message
+- **A connection that reaches another server no longer deletes its logs by itself.** When the server behind a connection changes (its address was edited, an SSH alias points elsewhere, the swarm was set up again), Stackline stops collecting and asks: keep the old logs, or delete them. Before, they were deleted without asking
+- **At the size limit, a busy server no longer pushes out the logs of a quiet one.** Each connection gets an equal share of the space, and only connections above their share lose their oldest lines
 
 ### Added
 - **Read-only is a switch per connection.** Every connection starts read-only, as before: only reads reach Docker. Click **Read-only** in the top bar (or run "Allow changes" from the palette) and confirm to allow changes there; the badge turns amber and says **Changes allowed**. Click it again to lock the connection. The server checks this on every change, and `stackline serve --read-only` (or `STACKLINE_READ_ONLY=1`) keeps every connection locked. Changing a connection's host or kind locks it again
 - **Restart, stop, start and scale.** With changes allowed, the Services and Containers lists and the inspector offer them: `r` restarts a service (on swarm, like `docker service update --force`), `x` stops and `u` starts its containers (Compose and lone containers, also one container from the Containers list), `c` scales a replicated swarm service. Each one asks first and shows the `docker` command it amounts to. Nothing is ever created or removed
 - **Log workspace.** Press `l` on a service, stack, task or node (or **Tail below** in the inspector) to follow its lines in a tab at the bottom of the window. The tabs keep following while you use the rest of the app, can be resized, shrunk with `w`, and are remembered per connection
 - **Keys everywhere.** `:` or Ctrl K opens the command palette, which also runs commands (narrow the lists to a stack, close the workspace, show the keys). `?` lists every key. `g` then a letter goes to a page (`g s` Services, `g t` Tasks, `g k` Stacks, `g l` Logs…); Alt ← and Alt → go back and forward
+
+### Fixed
+- **"Clear stored logs" during a read could leave part of that read behind**, and those lines then kept the cleared range from filling again
+- **A replica read for the first time held up all the others.** Reading hours of a busy replica can take minutes; other replicas and container events now go on being read meanwhile
+- **Deploys could go missing from the Overview** when a service crashed thousands of times after them
+- **`--host 0.0.0.0` answered nobody.** Other machines were turned away because they address Stackline by an IP address it did not know. Any IP address of the machine now works; names are still refused, which keeps DNS rebinding out. Stackline also warns that the link travels unencrypted
+- **A settings file that could not be read kept Stackline from starting.** It is now set aside as `config.broken.json`, Stackline starts with the default settings and says so
+- **A log line could run as a formula** when a CSV download was opened in a spreadsheet app. Cells that start with `=`, `+`, `-` or `@` now start with `'`
+- **A Docker that accepted a request and then never answered stopped log collection for good.** Requests now give up after 30 seconds without an answer and are tried again on the next poll
 
 ## 0.5.1
 

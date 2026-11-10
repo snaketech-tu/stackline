@@ -18,6 +18,9 @@ use serde::de::DeserializeOwned;
 use super::endpoint::Endpoint;
 
 const JSON_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a request may wait for the response headers. Log and event
+/// streams send them at once and the body later.
+const HEAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug)]
 pub struct DockerClient {
@@ -34,7 +37,16 @@ impl DockerClient {
     }
 
     /// Sends a GET request and returns the response with its body still streaming.
+    /// Fails when Docker does not answer with headers within [`HEAD_TIMEOUT`]:
+    /// a daemon or tunnel that accepts the connection and then hangs would
+    /// otherwise stop log collection for good.
     pub async fn get(&self, path_and_query: &str) -> Result<Response<Incoming>> {
+        tokio::time::timeout(HEAD_TIMEOUT, self.get_inner(path_and_query))
+            .await
+            .map_err(|_| anyhow!("Docker did not start answering {path_and_query} within {HEAD_TIMEOUT:?}"))?
+    }
+
+    async fn get_inner(&self, path_and_query: &str) -> Result<Response<Incoming>> {
         let stream = self.endpoint.connect().await.with_context(|| format!("could not reach Docker at {}", self.endpoint.describe()))?;
         let (mut sender, conn) =
             hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.context("HTTP handshake with Docker failed")?;

@@ -62,6 +62,13 @@ async fn main() -> Result<()> {
         println!("Stackline {} is running at {url}", env!("CARGO_PKG_VERSION"));
     } else {
         println!("Stackline is running. Open this link to use it:\n\n  {url}\n\nPress Ctrl+C to stop.");
+        if !host.is_loopback() {
+            println!(
+                "\nStackline listens beyond this computer ({host}). Other machines open it with this computer's IP address\n\
+                 in place of {}. The link carries the sign-in and travels unencrypted: share it only on a network you trust.",
+                server.addr.ip()
+            );
+        }
         if !no_open {
             let _ = webbrowser::open(&url);
         }

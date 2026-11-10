@@ -44,6 +44,8 @@ pub struct AppState {
     pub token: String,
     pub desktop: bool,
     pub allowed_hosts: Vec<String>,
+    /// Also answer any `Host` that is an IP address with this port.
+    pub ip_hosts: Option<u16>,
     pub updater: Arc<Updater>,
 }
 
@@ -71,6 +73,10 @@ pub async fn start(opts: ServeOptions) -> Result<Server> {
     if !addr.ip().is_loopback() {
         allowed_hosts.push(addr.to_string());
     }
+    // Listening beyond this computer (`--host`): other machines address it by
+    // one of its IP addresses, which cannot be known in advance for 0.0.0.0.
+    // Names stay refused, which is what keeps DNS rebinding out.
+    let ip_hosts = (!addr.ip().is_loopback()).then_some(addr.port());
     manager.open_all();
     let updater = Updater::new(opts.installer);
     updater.spawn_checks(manager.clone());
@@ -79,6 +85,7 @@ pub async fn start(opts: ServeOptions) -> Result<Server> {
         token: token.clone(),
         desktop: opts.desktop,
         allowed_hosts,
+        ip_hosts,
         updater: updater.clone(),
     });
     let app = web::router(state);

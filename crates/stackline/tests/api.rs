@@ -30,14 +30,25 @@ impl Drop for App {
 }
 
 fn app() -> App {
+    app_with(None)
+}
+
+/// An app listening beyond this computer (`--host`) on this port.
+fn app_with(ip_hosts: Option<u16>) -> App {
     // A counter, because tests run in parallel and macOS clocks tick in microseconds.
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let dir = std::env::temp_dir().join(format!("stackline-api-test-{}-{nanos}-{n}", std::process::id()));
     let manager = Manager::new(Paths::in_dir(&dir)).unwrap();
-    let state =
-        Arc::new(AppState { manager, token: TOKEN.into(), desktop: false, allowed_hosts: vec![HOST.into()], updater: Updater::new(None) });
+    let state = Arc::new(AppState {
+        manager,
+        token: TOKEN.into(),
+        desktop: false,
+        allowed_hosts: vec![HOST.into()],
+        ip_hosts,
+        updater: Updater::new(None),
+    });
     App { router: router(state.clone()), state, dir }
 }
 
@@ -107,6 +118,27 @@ async fn only_answers_on_its_own_address() {
         .body(Body::empty())
         .unwrap();
     assert_eq!(send(&app, elsewhere).await.0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn listening_on_the_network_answers_ip_addresses_but_no_names() {
+    let at = |app: &App, host: &str| {
+        let r = Request::builder()
+            .uri("/api/meta")
+            .header(header::HOST, host)
+            .header(header::COOKIE, format!("stackline_token={TOKEN}"))
+            .body(Body::empty())
+            .unwrap();
+        let router = app.router.clone();
+        async move { router.oneshot(r).await.unwrap().status() }
+    };
+    let app = app_with(Some(7070));
+    assert_eq!(at(&app, "192.168.1.20:7070").await, StatusCode::OK);
+    assert_eq!(at(&app, "[fd00::5]:7070").await, StatusCode::OK);
+    assert_eq!(at(&app, "192.168.1.20:8080").await, StatusCode::FORBIDDEN);
+    assert_eq!(at(&app, "attacker.example:7070").await, StatusCode::FORBIDDEN);
+    // On this computer only, an IP address of the network is refused like a name.
+    assert_eq!(at(&app_with(None), "192.168.1.20:7070").await, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

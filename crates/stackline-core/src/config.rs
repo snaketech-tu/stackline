@@ -135,6 +135,31 @@ impl AppConfig {
         }
     }
 
+    /// Like [`AppConfig::load`], but a file that cannot be read as settings
+    /// (edited by hand, say) does not keep Stackline from starting: it is
+    /// moved aside as `config.broken.json` and the defaults are used. The
+    /// second value says what happened, for the UI to show.
+    pub fn load_or_set_aside(path: &Path) -> Result<(AppConfig, Option<String>)> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((AppConfig::default(), None)),
+            Err(e) => return Err(e.into()),
+        };
+        match serde_json::from_slice(&bytes) {
+            Ok(c) => Ok((c, None)),
+            Err(e) => {
+                let aside = path.with_file_name("config.broken.json");
+                std::fs::rename(path, &aside)?;
+                tracing::warn!("{} could not be read ({e}); moved to {}", path.display(), aside.display());
+                let msg = format!(
+                    "Your settings file could not be read ({e}), so Stackline started with the default settings. The old file was kept as {}.",
+                    aside.display()
+                );
+                Ok((AppConfig::default(), Some(msg)))
+            }
+        }
+    }
+
     pub fn save(&self, path: &Path) -> Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -259,6 +284,24 @@ mod tests {
         std::fs::remove_dir_all(&base).unwrap();
         assert_eq!(app_dir(base.clone()), base.join("stackline"));
         assert!(!base.exists());
+    }
+
+    #[test]
+    fn a_broken_settings_file_is_set_aside_not_fatal() {
+        let dir = std::env::temp_dir().join(format!("stackline-broken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"connections": [ oops"#).unwrap();
+        let (c, warning) = AppConfig::load_or_set_aside(&path).unwrap();
+        assert_eq!(c.connections.len(), 1);
+        assert!(warning.unwrap().contains("config.broken.json"));
+        assert!(!path.exists());
+        assert_eq!(std::fs::read_to_string(dir.join("config.broken.json")).unwrap(), r#"{"connections": [ oops"#);
+        // A good file loads as it is, with nothing to say.
+        AppConfig::default().save(&path).unwrap();
+        assert!(AppConfig::load_or_set_aside(&path).unwrap().1.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

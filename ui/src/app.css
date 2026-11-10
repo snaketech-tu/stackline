@@ -314,6 +314,7 @@ button:disabled{opacity:.5;cursor:default}
 a{color:var(--accent)}
 .err-banner{display:flex;gap:12px;align-items:flex-start;padding:14px 18px;border-radius:var(--r);background:color-mix(in srgb,var(--err) 9%,var(--panel));border:1px solid color-mix(in srgb,var(--err) 30%,transparent);white-space:pre-wrap}
 .warn-banner{display:flex;gap:12px;align-items:flex-start;padding:12px 18px;border-radius:var(--r);background:color-mix(in srgb,var(--warn) 10%,var(--panel));border:1px solid color-mix(in srgb,var(--warn) 30%,transparent)}
+.host-banner{align-items:center;flex-wrap:wrap;margin-bottom:12px}
 .center-empty{display:grid;place-items:center;gap:10px;padding:60px 20px;text-align:center;color:var(--muted)}
 .spinner{width:22px;height:22px;border-radius:50%;border:3px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
