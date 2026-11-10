@@ -3,6 +3,11 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## Unreleased
+
+### Fixed
+- **Pages open at the top.** Every page scrolls in the same area, so a page opened where the last one was scrolled to: Preferences, opened from the Logs page, started at its bottom. Each page, and each connection you switch to, now starts at the top
+
 ## 0.6.0
 
 Stackline now works like Kubri: lists you can drive with the keyboard, an inspector beside the list, and a log workspace that keeps running while you look around. Read-only is now a switch per connection, and with it off Stackline can restart, stop, start and scale services.
