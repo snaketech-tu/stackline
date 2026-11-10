@@ -176,28 +176,106 @@ test('a typed time range shows those lines, and the arrows step through time', a
   await page.keyboard.press('Escape')
 })
 
-test('from and to fields pick an exact range, and nonsense is refused', async ({ page }) => {
-  await open(page, 'logs')
-  await page.getByRole('button', { name: /Custom/ }).click()
-  const dialog = page.getByRole('dialog', { name: 'Time range' })
-  await dialog.getByRole('textbox', { name: 'Type a time range' }).fill('soon-ish')
-  await expect(dialog).toContainText('Not a range yet')
+test.describe('From and To', () => {
+  // A 24-hour locale and a fixed zone, so typed times mean the same everywhere.
+  test.use({ locale: 'de-DE', timezoneId: 'Europe/Berlin' })
 
-  const pad = (n: number) => String(n).padStart(2, '0')
-  const local = (t: number) => {
-    const d = new Date(t)
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  /** `dd.mm. HH:MM` of a moment `minsAgo` back, in the page's zone, and that moment to the minute. */
+  async function moment(page: import('@playwright/test').Page, minsAgo: number) {
+    return page.evaluate((m) => {
+      const d = new Date(Math.floor((Date.now() - m * 60e3) / 60e3) * 60e3)
+      const p = (n: number) => String(n).padStart(2, '0')
+      return { text: `${p(d.getDate())}.${p(d.getMonth() + 1)}. ${p(d.getHours())}:${p(d.getMinutes())}`, t: d.getTime() }
+    }, minsAgo)
   }
-  const now = Date.now()
-  await dialog.getByLabel('From').fill(local(now - 2 * 3600e3))
-  await dialog.getByLabel(/^To/).fill(local(now - 3 * 3600e3))
-  await dialog.getByRole('button', { name: 'Show this range' }).click()
-  await expect(dialog).toContainText('The end must come after the start.')
-  await dialog.getByLabel(/^To/).fill(local(now - 60e3))
-  await dialog.getByRole('button', { name: 'Show this range' }).click()
-  await expect(dialog).toHaveCount(0)
-  await expect(page).toHaveURL(/[#&?]t=\d+-\d+(&|$)/)
-  await expect(page.locator('.stream .row').first()).toBeVisible()
+
+  test('typed From and To times stay while the page refreshes, and Enter shows exactly that range', async ({ page }) => {
+    await open(page, 'logs')
+    await page.keyboard.press('t')
+    const dialog = page.getByRole('dialog', { name: 'Time range' })
+    const from = dialog.getByRole('textbox', { name: 'From', exact: true })
+    const to = dialog.getByRole('textbox', { name: 'To', exact: true })
+    const a = await moment(page, 120)
+    const z = await moment(page, 30)
+
+    // Typed key by key, the way a person does it.
+    await from.click()
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type(a.text)
+    await to.click()
+    await page.keyboard.press('Control+a')
+    await page.keyboard.type(z.text)
+    await expect(dialog).not.toContainText('Not a time yet')
+
+    // The page reloads its lines and the store meanwhile; what was typed must stay.
+    await page.waitForTimeout(16_000)
+    await expect(from).toHaveValue(a.text)
+    await expect(to).toHaveValue(z.text)
+
+    await to.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    await expect(page).toHaveURL(new RegExp(`[#&?]t=${a.t}-${z.t}(&|$)`))
+    await expect(page.locator('.stream .row').first()).toBeVisible()
+  })
+
+  test('an empty To runs until now, arrows nudge a time, and nonsense is refused', async ({ page }) => {
+    await open(page, 'logs')
+    await page.getByRole('button', { name: /Custom/ }).click()
+    const dialog = page.getByRole('dialog', { name: 'Time range' })
+    const from = dialog.getByRole('textbox', { name: 'From', exact: true })
+    const to = dialog.getByRole('textbox', { name: 'To', exact: true })
+    await expect(to).toHaveValue('')
+    await expect(dialog).toContainText('Empty: until now')
+
+    await from.fill('soon-ish')
+    await expect(dialog).toContainText('Not a time yet')
+    await dialog.getByRole('button', { name: 'Show this range' }).click()
+    await expect(dialog.getByRole('alert')).toContainText('The start is not a time')
+
+    const a = await moment(page, 90)
+    await from.fill(a.text)
+    await to.fill((await moment(page, 100)).text)
+    await from.press('Enter')
+    await expect(dialog.getByRole('alert')).toContainText('The end must come after the start.')
+
+    // Up and down move a minute, with Shift an hour.
+    await from.press('ArrowUp')
+    await from.press('Shift+ArrowDown')
+    const nudged = await from.inputValue()
+    await to.fill('')
+    await from.press('Enter')
+    await expect(dialog).toHaveCount(0)
+    const start = a.t + 60e3 - 3600e3
+    expect(nudged).toMatch(/^\d{4}-\d\d-\d\d \d\d:\d\d$/)
+    await expect(page).toHaveURL(new RegExp(`[#&?]t=${start}-now(&|$)`))
+  })
+
+  test('the calendar button opens the browser picker and a picked time lands in the field', async ({ page }) => {
+    await open(page, 'logs')
+    // Headless Chromium draws no picker window, so note the call and answer it the way the picker does.
+    await page.evaluate(() => {
+      ;(window as unknown as { picks: number }).picks = 0
+      HTMLInputElement.prototype.showPicker = function () {
+        ;(window as unknown as { picks: number }).picks++
+      }
+    })
+    await page.keyboard.press('t')
+    const dialog = page.getByRole('dialog', { name: 'Time range' })
+    await dialog.getByRole('button', { name: 'Calendar for from' }).click()
+    expect(await page.evaluate(() => (window as unknown as { picks: number }).picks)).toBe(1)
+    const picked = await page.evaluate(() => {
+      const d = new Date(Date.now() - 3 * 3600e3)
+      const p = (n: number) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`
+    })
+    const ghost = dialog.locator('input[type="datetime-local"]').first()
+    await ghost.evaluate((el: HTMLInputElement, v) => {
+      el.value = v
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+    }, picked)
+    await expect(dialog.getByRole('textbox', { name: 'From', exact: true })).toHaveValue(picked.replace('T', ' '))
+    await expect(dialog).toBeVisible()
+  })
 })
 
 test('Ctrl K takes a time range', async ({ page }) => {

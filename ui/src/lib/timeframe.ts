@@ -143,6 +143,20 @@ function point(text: string, now: number): { t: number; day?: boolean } | null {
 }
 
 /**
+ * One moment typed in a From or To field: `2026-11-10 08:15`, `10.11. 8:15`,
+ * `yesterday 14:00`, `14:00`, `2h ago`. A day alone is its midnight. Null
+ * when it means nothing.
+ */
+export function parsePoint(text: string, now = Date.now()): number | null {
+  return point(text, now)?.t ?? null
+}
+
+/** A moment as text for a From or To field: `2026-11-10 08:15`. */
+export function fieldValue(t: number): string {
+  return inputValue(t).replace('T', ' ')
+}
+
+/**
  * Reads a typed range. Understands, among others:
  * `15m`, `last 2 hours`, `today`, `yesterday`, `this week`, `since 14:00`,
  * `14:00-15:30`, `yesterday 22:00 to today 02:00`, `2026-11-09`,

@@ -31,6 +31,7 @@ export const ICON: Record<string, string> = {
   chevL: '<path d="m15 6-6 6 6 6"/>',
   x: '<path d="M6 6l12 12M18 6 6 18"/>',
   filter: '<path d="M3 5h18l-7 8v6l-4-2v-4z"/>',
+  calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 10h17M8 3v4M16 3v4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   check: '<path d="m5 12 5 5 9-10"/>',
