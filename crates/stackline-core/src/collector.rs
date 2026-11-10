@@ -548,7 +548,8 @@ mod tests {
     #[tokio::test]
     async fn a_slow_first_read_does_not_hold_up_the_other_replicas() {
         // Answers every log request at once with one new line, except those of
-        // the replica `slow`, which take 4 seconds: a first read of hours of logs.
+        // the replica `slow`, which take 8 seconds: a first read of hours of logs.
+        // Two polls wait at most 2 × FIRST_WAIT for first reads, well short of that.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap().to_string();
         let line = Arc::new(Mutex::new(0i64));
@@ -568,7 +569,7 @@ mod tests {
                     }
                     let head = String::from_utf8_lossy(&buf).to_string();
                     if head.contains("/slow/") {
-                        tokio::time::sleep(Duration::from_secs(4)).await;
+                        tokio::time::sleep(Duration::from_secs(8)).await;
                     }
                     let ts = *l.lock().unwrap();
                     let body = frames(&[(ts, "INFO hello".to_string())], "/");
@@ -586,7 +587,8 @@ mod tests {
         let mut c = Collector::new("conn", store.clone());
 
         *line.lock().unwrap() = now - 10_000_000;
-        let started = Instant::now();
+        let first = Instant::now();
+        let started = first;
         let r = c.poll(&client, vec![fast.clone(), slow.clone()], RETENTION).await;
         assert!(started.elapsed() < Duration::from_secs(3), "the poll waited {:?} for the slow first read", started.elapsed());
         assert_eq!(r.entries, 1, "{r:?}");
@@ -599,7 +601,8 @@ mod tests {
         assert_eq!(r.entries, 1, "{r:?}");
 
         // Once done, the slow replica's lines are stored and it is polled like any other.
-        tokio::time::sleep(Duration::from_secs(3)).await;
+        let left = Duration::from_secs(9).saturating_sub(first.elapsed());
+        tokio::time::sleep(left).await;
         c.poll(&client, vec![fast, slow], RETENTION).await;
         assert!(store.cursor("conn", "slow").unwrap().is_some());
         assert_eq!(stored(&store), 3);
