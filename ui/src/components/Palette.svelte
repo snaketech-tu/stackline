@@ -34,7 +34,7 @@
       const e = app.errors?.byService[s.fullName] ?? 0
       out.push({
         kind: 'Service', label: s.fullName, text: `${s.fullName} ${s.image}`,
-        right: `${s.running}/${s.desired}${e ? ` · ${e} errors` : ''}${app.isPinned(s.key) ? ' · ★' : ''}`,
+        right: `${s.running}/${s.desired}${e ? ` · ${e} errors` : ''}${app.isPinned(s.key) ? ' · pinned' : ''}`,
         run: () => app.openService(s.key), logs: () => app.showLogs([s.fullName]),
       })
     }
@@ -84,7 +84,7 @@
       : []
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
     if (!words.length) {
-      const top = all.filter((x) => x.kind === 'Service' && (x.right.includes('★') || /^0\/[1-9]/.test(x.right)))
+      const top = all.filter((x) => x.kind === 'Service' && (x.right.endsWith(' · pinned') || /^0\/[1-9]/.test(x.right)))
       return [...top, ...all.filter((x) => x.kind === 'Error').slice(0, 3), ...all.filter((x) => x.kind === 'Page')]
     }
     // What it is called counts as much as its keywords: "allow changes" finds "Allow changes on …".

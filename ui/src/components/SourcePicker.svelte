@@ -34,7 +34,7 @@
     <!-- svelte-ignore a11y_autofocus -->
     <input class="find" type="search" placeholder="Find a stack or service" aria-label="Find a stack or service" bind:value={find} autofocus />
     {#if pinned.length}
-      <div class="hd">★ Pinned</div>
+      <div class="hd">Pinned</div>
       {#each pinned as s (s.key)}{@render item(s.fullName, s.fullName, errs(s.fullName))}{/each}
     {/if}
     {#if stacks.length}

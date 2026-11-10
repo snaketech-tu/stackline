@@ -5,8 +5,6 @@
   import { ago, bytes, firstLine, hhmm, pct, plural, tidy } from '../lib/format'
   import { memPct, nodeDot, nodeRole, stackState, svcProblem } from '../lib/health'
   import type { DockerEvent, LogResponse, ServiceRef } from '../lib/types'
-  import Ring from '../components/Ring.svelte'
-  import ErrSpark from '../components/ErrSpark.svelte'
   import Histogram from '../components/Histogram.svelte'
   import Icon from '../components/Icon.svelte'
   import ServiceTable from '../components/ServiceTable.svelte'
@@ -213,7 +211,6 @@
       <span class="lbl">Host · {host.name}</span>
       <span class="val">{hostCpu === null ? '–' : hostCpu.toFixed(0) + '%'}<small> CPU</small></span>
       <span class="sub" title="CPU and memory used by containers">{bytes(host.memUsed)} memory · {host.ncpu} cores</span>
-      <Ring value={hostCpu ?? 0} total={100} load />
       <span class="go">Host details →</span>
     </button>
   {:else}
@@ -222,7 +219,6 @@
       <span class="val">{ready}<small>/{snap.nodes.length}</small></span>
       <span class="sub">{plural(managers.length, 'manager')} · quorum
         {#if managers.filter((m) => m.state === 'ready').length > managers.length / 2}<span class="pill ok">healthy</span>{:else}<span class="pill err">lost</span>{/if}</span>
-      <Ring value={ready} total={snap.nodes.length} />
       <span class="go">All nodes →</span>
     </button>
   {/if}
@@ -230,21 +226,18 @@
     <span class="lbl">Services healthy</span>
     <span class="val">{healthy}<small>/{services.length}</small></span>
     <span class="sub">{#if healthy < services.length}{services.length - healthy} not healthy · {/if}across {plural(snap.stacks.length, 'stack')}</span>
-    <Ring value={healthy} total={services.length} />
     <span class="go">{healthy < services.length ? 'Show problems →' : 'All services →'}</span>
   </button>
   <button class="panel kpi" onclick={() => { app.lists.tasks.q = ''; app.drill('tasks') }}>
     <span class="lbl">{snap.mode === 'swarm' ? 'Tasks running' : 'Containers running'}</span>
     <span class="val">{running}<small>/{tasks.length}</small></span>
     <span class="sub">{tasks.length - running} stopped, pending or failed</span>
-    <Ring value={running} total={tasks.length} />
     <span class="go">{snap.mode === 'swarm' ? 'All tasks →' : 'All containers →'}</span>
   </button>
   <button class="panel kpi" class:alert={err1 > 0} onclick={errorsOnly}>
     <span class="lbl">Errors · last hour</span>
     <span class="val" style:color={err1 ? 'var(--err)' : 'inherit'}>{err1}</span>
     <span class="sub">{trend()}</span>
-    <ErrSpark values={app.errors?.spark ?? []} />
     <span class="go">Show errors →</span>
   </button>
 </div>
