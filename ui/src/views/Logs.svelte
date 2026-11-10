@@ -1,21 +1,22 @@
 <script lang="ts">
   import { onDestroy, untrack } from 'svelte'
-  import { app, LEVELS, PRESETS, type Preset } from '../lib/state.svelte'
+  import { app, LEVELS } from '../lib/state.svelte'
   import { api, fetchEvents, fetchLogs } from '../lib/api'
   import { LINES, LogPages, nearEnd } from '../lib/pages.svelte'
   import { ago, bytes, dateTime, firstLine, hhmm, hms, patternParts, plural, searchTerms } from '../lib/format'
   import type { DockerEvent, Entry, Group, Level, StoreStats } from '../lib/types'
   import { isCrash } from '../lib/events'
+  import { pointText } from '../lib/timeframe'
   import Histogram from '../components/Histogram.svelte'
   import Icon from '../components/Icon.svelte'
   import LogRow from '../components/LogRow.svelte'
   import SourcePicker from '../components/SourcePicker.svelte'
+  import RangePicker from '../components/RangePicker.svelte'
   import DownloadMenu from '../components/DownloadMenu.svelte'
   import Spark from '../components/Spark.svelte'
 
   const L = app.logs
   const COL: Record<Level, string> = { ERROR: 'var(--err)', WARN: 'var(--warn)', INFO: 'var(--info)', DEBUG: 'var(--dbg)' }
-  const RANGES: Preset[] = ['auto', ...(Object.keys(PRESETS) as Preset[])]
 
   // The newest page is replaced as a whole on every load; older pages are added by "Show more".
   const pages = new LogPages()
@@ -31,6 +32,7 @@
   let seq = 0
   /** Open the newest entry once the next result arrives (after picking a group). */
   let openFirst = false
+  let rangeOpen = $state(false)
 
   async function load() {
     const id = app.activeId
@@ -56,14 +58,14 @@
 
   // Reload when a filter changes (debounced), and keep a preset range moving.
   $effect(() => {
-    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.from, L.to, [...L.levels].join()]
+    void [app.activeId, [...L.sources].join(), L.q, L.group, L.preset, L.openEnd, L.from, L.to, [...L.levels].join()]
     // Other filters: the older lines shown so far no longer fit.
     untrack(() => pages.reset())
     const t = setTimeout(load, 80)
     return () => clearTimeout(t)
   })
   $effect(() => {
-    if (!L.preset) return
+    if (!L.moving) return
     const every = L.live ? Math.max(1, app.settings?.logPollSecs ?? 3) * 1000 : 15000
     // A hidden tab catches up when it is shown again instead of polling in the background.
     const t = setInterval(() => !document.hidden && load(), every)
@@ -96,7 +98,7 @@
 
   function toggleLive() {
     L.live = !L.live
-    if (L.live && !L.preset) L.setPreset('auto')
+    if (L.live && !L.moving) L.setPreset('auto')
   }
 
   function setQ(q: string) {
@@ -185,6 +187,13 @@
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.drawer || app.palette || app.help || app.ask || e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === 'f') {
       L.maxi = !L.maxi
+    } else if (e.key === 't') {
+      e.preventDefault()
+      rangeOpen = true
+    } else if (e.key === '[' || e.key === ']') {
+      L.step(e.key === '[' ? -1 : 1)
+    } else if (e.key === '-') {
+      L.zoomOut()
     } else if (e.key === '/') {
       e.preventDefault()
       search?.focus()
@@ -210,11 +219,7 @@
 
 <section class="panel">
   <div class="pb fbar">
-    <div class="seg" role="group" aria-label="Time range">
-      {#each RANGES as p (p)}
-        <button aria-pressed={L.preset === p} onclick={() => L.setPreset(p)} title={p === 'auto' ? 'From the oldest stored line until now' : undefined}>{p === 'auto' ? 'Auto' : p}</button>
-      {/each}
-    </div>
+    <RangePicker bind:open={rangeOpen} />
     <SourcePicker />
     <span class="lvgroup" role="group" aria-label="Levels">
       {#each LEVELS as l (l)}
@@ -239,9 +244,10 @@
   <div class="ph" style="border-top:1px solid var(--line);border-bottom:0;padding-bottom:0">
     <h2>Log volume</h2>
     <span class="muted mono" style="font-size:12px">
-      {#if L.preset === 'auto'}since {hhmm(shown.from || L.window()[0])}{:else if L.preset}last {L.preset}{:else}{hhmm(L.from)} – {hhmm(L.to)}
-        <button class="btn ghost sm" onclick={() => L.setPreset('auto')}>Reset zoom</button>{/if}
+      {#if L.preset === 'auto'}since {hhmm(shown.from || L.window()[0])}{:else}{L.rangeLabel(app.now)}{/if}
     </span>
+    {#if L.preset !== 'auto'}<button class="btn ghost sm" onclick={() => L.zoomOut()} title="Twice as long ( - )">Zoom out</button>{/if}
+    {#if !L.preset}<button class="btn ghost sm" onclick={() => L.setPreset('auto')} title="Back to all stored lines">Reset range</button>{/if}
     {#if loading}<span class="spinner" style="width:12px;height:12px"></span>{/if}
     <span class="pill ok hide-sm" title="Logs are collected per replica and kept on this computer" style="font-size:11.5px">
       <span class="dot"></span>Local store · {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'}{#if stats} · {bytes(stats.bytes)}{/if}{#if res?.syncedAt} · synced {ago(res.syncedAt, app.now)}{/if}
@@ -353,11 +359,13 @@
             </button>
             <span class="muted">{pages.entries.length.toLocaleString()} of {res.result.total.toLocaleString()} shown</span>
           {:else if pages.more}
-            <span>The stream shows at most {LINES.max.toLocaleString()} lines. For older ones, drag across the graph to pick an earlier range, or download them.</span>
+            <span>The stream shows at most {LINES.max.toLocaleString()} lines. For older ones, pick an earlier range (<kbd>[</kbd> or type one under <kbd>t</kbd>), or download them.</span>
+            <button class="btn ghost sm" onclick={() => L.step(-1)}>Earlier range</button>
           {:else if L.preset === 'auto'}
             <span class="muted">These are all the stored lines that match{#if last}, back to {app.now - last.ts / 1000 > 20 * 3600e3 ? dateTime(last.ts / 1000) : hms(last.ts / 1000).slice(0, 8)}{/if}. Stackline keeps {app.settings?.retentionDays ?? 2} {app.settings?.retentionDays === 1 ? 'day' : 'days'} of logs, and reads a replica 6 hours back when it first sees it.</span>
           {:else}
-            <span class="muted">No older lines in this range, which starts at {hhmm(shown.from)}.</span>
+            <span class="muted">No older lines in this range, which starts at {pointText(shown.from, app.now)}.</span>
+            <button class="btn ghost sm" onclick={() => L.step(-1)}>Earlier range</button>
             <button class="btn ghost sm" onclick={() => L.setPreset('auto')}>Show all stored lines</button>
           {/if}
         </div>

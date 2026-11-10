@@ -3,8 +3,8 @@
   import type { Snippet } from 'svelte'
   import { onMount } from 'svelte'
 
-  let { anchor, onclose, align = 'left', label, children }: {
-    anchor: HTMLElement; onclose: () => void; align?: 'left' | 'right'; label: string; children: Snippet
+  let { anchor, onclose, align = 'left', label, wide = false, children }: {
+    anchor: HTMLElement; onclose: () => void; align?: 'left' | 'right'; label: string; wide?: boolean; children: Snippet
   } = $props()
 
   let el: HTMLDivElement | undefined = $state()
@@ -47,7 +47,7 @@
 
 <!-- The menu itself moves to the end of the page; this wrapper stays where Svelte expects it. -->
 <div style="display:contents">
-  <div class="pop" role="menu" aria-label={label} bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px">
+  <div class="pop" class:wide role={wide ? 'dialog' : 'menu'} aria-label={label} bind:this={el} style:left="{pos.left}px" style:top="{pos.top}px">
     {@render children()}
   </div>
 </div>

@@ -95,7 +95,7 @@ test('Copy link fixes the time range, and the link opens from Ctrl K', async ({ 
   await expect(page.getByRole('heading', { name: 'Log stream' })).toBeVisible()
   await expect(page.getByPlaceholder(/^Search/)).toHaveValue('worker')
   await expect(page.getByRole('group', { name: 'Levels' }).getByRole('button', { name: /^Warn/ })).toHaveAttribute('aria-pressed', 'true')
-  await expect(page.getByRole('button', { name: 'Reset zoom' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Reset range' })).toBeVisible()
 })
 
 // `migrate` prints a 40 KB line, 1500 short lines and "Applied 3 migrations", then exits.
@@ -137,4 +137,73 @@ test('a line longer than 16 KB is one entry, whole, and the row says it goes on'
   expect(badge!.x + badge!.width).toBeLessThanOrEqual(box!.x + box!.width)
   await row.click()
   await expect(row.locator('pre.trace')).toHaveText('Schema dump ' + 'x'.repeat(40000))
+})
+
+test('a typed time range shows those lines, and the arrows step through time', async ({ page }) => {
+  await open(page, 'logs')
+  const rangeButton = page.getByRole('button', { name: /Custom/ })
+  await rangeButton.click()
+  const typed = page.getByRole('textbox', { name: 'Type a time range' })
+  await typed.fill('90 min')
+  await expect(page.getByRole('button', { name: 'Show last 90 minutes' })).toBeVisible()
+  await typed.press('Enter')
+  await expect(page).toHaveURL(/[#&?]t=90m(&|$)/)
+  await expect(page.getByRole('button', { name: /last 90 minutes/ }).first()).toBeVisible()
+  await expect(page.locator('.stream .row').first()).toBeVisible()
+
+  // Earlier: the 90 minutes before, a fixed range in the address.
+  await page.getByRole('button', { name: 'Earlier' }).click()
+  await expect(page).toHaveURL(/[#&?]t=\d+-\d+(&|$)/)
+  const [a, z] = /t=(\d+)-(\d+)/.exec(page.url())!.slice(1).map(Number)
+  expect(z - a).toBe(90 * 60e3)
+  // Later again: back to a range that ends now.
+  await page.getByRole('button', { name: 'Later' }).click()
+  await expect(page).toHaveURL(/[#&?]t=90m(&|$)/)
+
+  // A range that runs until now follows the clock and comes back from its link.
+  await page.keyboard.press('t')
+  await typed.fill('since 5h ago')
+  await typed.press('Enter')
+  await expect(page).toHaveURL(/[#&?]t=\d+-now(&|$)/)
+  await expect(page.locator('.stream .row').first()).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('button', { name: /^since / }).first()).toBeVisible()
+
+  // Typed ranges are offered again.
+  await page.keyboard.press('t')
+  await expect(page.getByRole('dialog', { name: 'Time range' })).toContainText('since 5h ago')
+  await expect(page.getByRole('dialog', { name: 'Time range' })).toContainText('90 min')
+  await page.keyboard.press('Escape')
+})
+
+test('from and to fields pick an exact range, and nonsense is refused', async ({ page }) => {
+  await open(page, 'logs')
+  await page.getByRole('button', { name: /Custom/ }).click()
+  const dialog = page.getByRole('dialog', { name: 'Time range' })
+  await dialog.getByRole('textbox', { name: 'Type a time range' }).fill('soon-ish')
+  await expect(dialog).toContainText('Not a range yet')
+
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const local = (t: number) => {
+    const d = new Date(t)
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  }
+  const now = Date.now()
+  await dialog.getByLabel('From').fill(local(now - 2 * 3600e3))
+  await dialog.getByLabel(/^To/).fill(local(now - 3 * 3600e3))
+  await dialog.getByRole('button', { name: 'Show this range' }).click()
+  await expect(dialog).toContainText('The end must come after the start.')
+  await dialog.getByLabel(/^To/).fill(local(now - 60e3))
+  await dialog.getByRole('button', { name: 'Show this range' }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page).toHaveURL(/[#&?]t=\d+-\d+(&|$)/)
+  await expect(page.locator('.stream .row').first()).toBeVisible()
+})
+
+test('Ctrl K takes a time range', async ({ page }) => {
+  await open(page, 'overview')
+  await page.keyboard.press('Control+k')
+  await page.getByPlaceholder(/^Search or run a command/).fill('last 2 hours')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/#logs\?.*t=2h(&|$)/)
 })

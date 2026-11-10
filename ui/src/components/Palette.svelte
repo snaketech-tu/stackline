@@ -4,6 +4,7 @@
   import { app, VIEWS } from '../lib/state.svelte'
   import { fetchLogs } from '../lib/api'
   import { firstLine } from '../lib/format'
+  import { parseRange } from '../lib/timeframe'
   import type { Group } from '../lib/types'
   import Icon from './Icon.svelte'
 
@@ -76,13 +77,18 @@
       const hash = pastedLink
       return [{ kind: 'Link', label: 'Open this log link', text: hash, right: '', run: () => { app.openLink(new URLSearchParams(hash.slice(hash.indexOf('?') + 1))); app.go('logs') } } satisfies Item]
     }
+    // A typed time range (`2h`, `yesterday 14:00-15:00`) shows the logs of that range.
+    const range = parseRange(q)
+    const rangeItem: Item[] = range
+      ? [{ kind: 'Range', label: `Show logs of ${q.trim()}`, text: q, right: 'time range', run: () => { app.go('logs'); app.logs.applyText(q) } }]
+      : []
     const words = q.toLowerCase().split(/\s+/).filter(Boolean)
     if (!words.length) {
       const top = all.filter((x) => x.kind === 'Service' && (x.right.includes('★') || /^0\/[1-9]/.test(x.right)))
       return [...top, ...all.filter((x) => x.kind === 'Error').slice(0, 3), ...all.filter((x) => x.kind === 'Page')]
     }
     // What it is called counts as much as its keywords: "allow changes" finds "Allow changes on …".
-    return all.filter((x) => words.every((w) => `${x.label} ${x.text}`.toLowerCase().includes(w))).slice(0, 30)
+    return [...rangeItem, ...all.filter((x) => words.every((w) => `${x.label} ${x.text}`.toLowerCase().includes(w)))].slice(0, 30)
   })
   $effect(() => {
     void q

@@ -5,6 +5,7 @@ import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
 import { ApiError, api, fetchDeploys, post, put, type LogParams } from './api'
 import { beforeEvent } from './events'
+import { parseRange, presetFor, presetMs, presetText, rangeText, type Preset, type Range } from './timeframe'
 import { load, save } from './storage'
 import { DockState } from './dock.svelte'
 import { newLists, type ListView } from './lists.svelte'
@@ -37,9 +38,9 @@ export type Drawer =
   | null
 
 export type Theme = 'system' | 'light' | 'dark'
-export type Preset = 'auto' | '15m' | '1h' | '3h' | '24h' | '7d'
-/** Minutes per fixed preset. `auto` starts at the oldest stored line instead. */
-export const PRESETS: Record<Exclude<Preset, 'auto'>, number> = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440, '7d': 10080 }
+export type { Preset }
+/** The ranges with a button of their own. `auto` starts at the oldest stored line. */
+export const PRESETS: Preset[] = ['15m', '1h', '3h', '24h', '7d']
 export const LEVELS: Level[] = ['ERROR', 'WARN', 'INFO', 'DEBUG']
 
 export { load, save }
@@ -87,6 +88,15 @@ export class LogFilters {
   }
 }
 
+function loadRecent(): string[] {
+  try {
+    const v = JSON.parse(load('stackline-recent-ranges') ?? '[]')
+    return Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string').slice(0, 6) : []
+  } catch {
+    return []
+  }
+}
+
 /** Filters of the logs view. Kept here so they survive switching views. */
 class LogsState extends LogFilters {
   /** Picked sources: full service names, or `stack:<name>` for a whole stack. Any of them matches. */
@@ -94,9 +104,14 @@ class LogsState extends LogFilters {
   q = $state('')
   /** The error group (fingerprint) the stream is narrowed to. */
   group = $state<string | null>(null)
+  /** A range that ends now and moves with it; null for a fixed one (`from`, `to`). */
   preset = $state<Preset | null>('auto')
   from = $state(Date.now() - 3 * 3600e3)
   to = $state(Date.now())
+  /** A fixed start that runs until now (`today`, `since 14:00`): `to` follows the clock. */
+  openEnd = $state(false)
+  /** Ranges picked in the range menu, newest first, as typed text. */
+  recent = $state<string[]>(loadRecent())
   live = $state(false)
   collapse = $state(true)
   /** Error groups above the stream (it gets the full width) or beside it. */
@@ -112,20 +127,31 @@ class LogsState extends LogFilters {
     this.autoFrom = autoFrom
   }
 
-  /** The time range to query: a preset ends now, a zoom is fixed. */
+  /** The time range to query: a preset or an open end ends now, a zoom is fixed. */
   window(): [number, number] {
-    if (this.preset) {
-      const to = Date.now()
-      return [this.preset === 'auto' ? Math.min(this.autoFrom(), to - 15 * 60e3) : to - PRESETS[this.preset] * 60e3, to]
-    }
+    const now = Date.now()
+    if (this.preset) return [this.preset === 'auto' ? Math.min(this.autoFrom(), now - 15 * 60e3) : now - (presetMs(this.preset) ?? 3600e3), now]
+    if (this.openEnd) return [this.from, Math.max(now, this.from + 1000)]
     return [this.from, this.to]
+  }
+
+  /** The range follows the clock, so it is reloaded now and then and can be followed live. */
+  get moving(): boolean {
+    return !!this.preset || this.openEnd
+  }
+
+  /** The range as words: `last 3 hours`, `since 14:00`, `yesterday 22:00 – 02:00`. */
+  rangeLabel(now = Date.now()): string {
+    if (this.preset === 'auto') return 'all stored lines'
+    if (this.preset) return presetText(this.preset)
+    return rangeText(this.from, this.openEnd ? null : this.to, now)
   }
 
   /** Query parameters for the current filters. */
   params(): LogParams {
     const [from, to] = this.window()
     const p: LogParams = { from: Math.floor(from), to: Math.ceil(to), levels: [...this.levels].join(',') }
-    if (this.preset) p.open = true
+    if (this.moving) p.open = true
     const q = [this.q.trim(), this.group ? `fp:${this.group}` : ''].filter(Boolean).join(' ')
     if (q) p.q = q
     const stacks = [...this.sources].filter((s) => s.startsWith('stack:')).map((s) => s.slice(6))
@@ -147,14 +173,78 @@ class LogsState extends LogFilters {
 
   setPreset(p: Preset) {
     this.preset = p
+    this.openEnd = false
     ;[this.from, this.to] = this.window()
   }
 
   zoom(from: number, to: number) {
     this.preset = null
+    this.openEnd = false
     this.live = false
     this.from = from
     this.to = to
+  }
+
+  /** From a fixed time until now, following the clock. Live stays as it was. */
+  since(from: number) {
+    this.preset = null
+    this.openEnd = true
+    this.from = from
+    this.to = Date.now()
+  }
+
+  setRange(r: Range) {
+    if ('preset' in r) this.setPreset(r.preset)
+    else if (r.to === null) this.since(r.from)
+    else this.zoom(r.from, r.to)
+  }
+
+  /**
+   * Reads a typed range (see `parseRange`) and shows it. Kept among the
+   * recent ranges when `remember` is set. False when it means nothing.
+   */
+  applyText(text: string, remember = true): boolean {
+    const r = parseRange(text)
+    if (!r) return false
+    this.setRange(r)
+    if (remember) this.remember(text.trim())
+    return true
+  }
+
+  remember(text: string) {
+    this.recent = [text, ...this.recent.filter((t) => t.toLowerCase() !== text.toLowerCase())].slice(0, 6)
+    save('stackline-recent-ranges', JSON.stringify(this.recent))
+  }
+
+  /**
+   * Moves the range by its own length: earlier (-1) or later (1). A range
+   * that would reach past now ends now and follows the clock again.
+   */
+  step(dir: -1 | 1) {
+    const [a, z] = this.window()
+    const len = z - a
+    const now = Date.now()
+    if (dir > 0 && this.moving) return
+    if (dir > 0 && z + len >= now - 1000) {
+      this.setPreset(presetFor(len))
+      return
+    }
+    this.zoom(a + dir * len, z + dir * len)
+  }
+
+  /** Twice as long around the same middle, never past now. */
+  zoomOut() {
+    const [a, z] = this.window()
+    const len = z - a
+    const now = Date.now()
+    if (this.moving) {
+      if (this.preset !== 'auto') this.setPreset(presetFor(2 * len))
+      return
+    }
+    const to = Math.min(now, z + len / 2)
+    const from = to - 2 * len
+    if (to >= now - 1000) this.setPreset(presetFor(2 * len))
+    else this.zoom(from, to)
   }
 
   /**
@@ -164,10 +254,11 @@ class LogsState extends LogFilters {
    */
   link(conn: string, fixed = false): string {
     const p = new URLSearchParams({ c: conn })
-    if (!this.preset || fixed) {
+    if (!this.moving || fixed) {
       const [from, to] = this.window()
       p.set('t', `${Math.floor(from)}-${Math.ceil(to)}`)
-    } else if (this.preset !== 'auto') p.set('t', this.preset)
+    } else if (this.openEnd) p.set('t', `${Math.floor(this.from)}-now`)
+    else if (this.preset !== 'auto') p.set('t', this.preset!)
     if (this.sources.size) p.set('s', [...this.sources].join(','))
     if (this.soloLevels) p.set('l', [...this.levels].join(','))
     if (this.q.trim()) p.set('q', this.q.trim())
@@ -179,9 +270,10 @@ class LogsState extends LogFilters {
   applyLink(p: URLSearchParams) {
     this.reset()
     const t = p.get('t') ?? ''
-    const range = /^(\d+)-(\d+)$/.exec(t)
-    if (range && +range[1] < +range[2]) this.zoom(+range[1], +range[2])
-    else if (t in PRESETS) this.setPreset(t as Preset)
+    const range = /^(\d+)-(\d+|now)$/.exec(t)
+    if (range && range[2] === 'now') this.since(+range[1])
+    else if (range && +range[1] < +range[2]) this.zoom(+range[1], +range[2])
+    else if (presetMs(t)) this.setPreset(t)
     this.sources.clear()
     for (const src of (p.get('s') ?? '').split(',')) if (src) this.sources.add(src)
     const levels = (p.get('l') ?? '').split(',').filter((l): l is Level => (LEVELS as string[]).includes(l))

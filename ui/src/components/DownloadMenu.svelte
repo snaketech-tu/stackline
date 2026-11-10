@@ -2,7 +2,7 @@
   // Download is one click for what the view shows; the arrow picks the format or the whole range.
   import { app, load, save } from '../lib/state.svelte'
   import { api, apiFetch, query } from '../lib/api'
-  import { hhmm } from '../lib/format'
+  import { rangeText } from '../lib/timeframe'
   import Icon from './Icon.svelte'
   import Popover from './Popover.svelte'
 
@@ -71,7 +71,7 @@
     <div class="sepl"></div>
     <div class="hd">Download now</div>
     <button class="it" role="menuitem" onclick={() => download(false)}><span class="l2"><span>What the view shows</span><small>Current filters and time range</small></span></button>
-    <button class="it" role="menuitem" onclick={() => download(true)}><span class="l2"><span>Everything from {hhmm(from)} to {hhmm(to)}</span><small>All services, all levels</small></span></button>
+    <button class="it" role="menuitem" onclick={() => download(true)}><span class="l2"><span>Everything {L.moving ? L.rangeLabel() : `from ${rangeText(from, to)}`}</span><small>All services, all levels</small></span></button>
     <div class="sepl"></div>
     <div class="note">Exports from the local store, with stack traces kept whole. Downloads go to this computer, never to the server.</div>
   </Popover>
