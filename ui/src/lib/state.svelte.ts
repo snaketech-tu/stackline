@@ -675,10 +675,11 @@ class AppState {
     if (!this.access.writable) return
     const conn = this.activeId
     const path = `/c/${encodeURIComponent(conn)}/action`
-    let command: string
+    let command = ''
+    // The plan shown; the server refuses to run another one (a container replaced meanwhile).
+    let plan: string | undefined
     try {
-      if (req.action === 'scale') command = ''
-      else command = (await post<{ command: string }>(path, { ...req, dry: true })).command
+      if (req.action !== 'scale') ({ command, plan } = await post<{ command: string; plan: string }>(path, { ...req, dry: true }))
     } catch (e) {
       this.notify(this.describe(e), 'err')
       return
@@ -693,7 +694,7 @@ class AppState {
       confirm: req.action === 'restart' ? 'Restart' : req.action === 'stop' ? 'Stop' : req.action === 'start' ? 'Start' : 'Scale',
       danger: req.action === 'stop',
       run: async (n) => {
-        const r = await post<{ done: string }>(path, { ...req, replicas: n ?? req.replicas })
+        const r = await post<{ done: string }>(path, { ...req, replicas: n ?? req.replicas, expect: plan })
         this.notify(r.done)
         if (conn === this.activeId) this.poll()
       },

@@ -41,7 +41,23 @@ pub struct Request {
     /// For `scale`: the new number of replicas.
     #[serde(default)]
     pub replicas: Option<u32>,
+    /// The fingerprint of the plan that was shown (from a dry run). When the
+    /// plan made now differs, nothing runs: see [`Changed`].
+    #[serde(default)]
+    pub expect: Option<String>,
 }
+
+/// The plan differs from the one that was shown and confirmed.
+#[derive(Debug)]
+pub struct Changed;
+
+impl std::fmt::Display for Changed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("The service changed since you confirmed, so nothing was done. Look at it again and retry.")
+    }
+}
+
+impl std::error::Error for Changed {}
 
 /// One call to the Docker API.
 #[derive(Clone, Debug, PartialEq)]
@@ -69,6 +85,19 @@ pub struct Plan {
 }
 
 const MAX_REPLICAS: u32 = 100;
+
+impl Plan {
+    /// A short value that changes whenever the calls do, so a confirmed plan
+    /// can be checked against the one about to run (FNV-1a of the calls).
+    pub fn fingerprint(&self) -> String {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in format!("{:?}", self.calls).bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+        format!("{h:016x}")
+    }
+}
 
 /// Works out the calls for a request on a service of a stack of `kind`.
 pub fn plan(req: &Request, svc: &Service, kind: StackKind) -> Result<Plan> {
@@ -247,7 +276,7 @@ mod tests {
     }
 
     fn req(action: Kind) -> Request {
-        Request { action, service: "shop_api".into(), stack: None, dry: false, replica: None, replicas: None }
+        Request { action, service: "shop_api".into(), stack: None, dry: false, replica: None, replicas: None, expect: None }
     }
 
     #[test]
@@ -285,6 +314,16 @@ mod tests {
         assert!(plan(&req(Kind::Stop), &s, StackKind::Swarm).is_err());
         assert!(plan(&Request { replicas: Some(2), ..req(Kind::Scale) }, &svc("global", vec![]), StackKind::Swarm).is_err());
         assert!(plan(&Request { replicas: Some(2), ..req(Kind::Scale) }, &s, StackKind::Compose).is_err());
+    }
+
+    #[test]
+    fn a_plan_made_after_a_container_was_replaced_has_another_fingerprint() {
+        let before = svc("compose", vec![task("1", "running", Some("a1"))]);
+        let after = svc("compose", vec![task("1", "running", Some("a2"))]);
+        let shown = plan(&req(Kind::Restart), &before, StackKind::Compose).unwrap().fingerprint();
+        assert_eq!(plan(&req(Kind::Restart), &before, StackKind::Compose).unwrap().fingerprint(), shown);
+        assert_ne!(plan(&req(Kind::Restart), &after, StackKind::Compose).unwrap().fingerprint(), shown);
+        assert_ne!(plan(&req(Kind::Stop), &before, StackKind::Compose).unwrap().fingerprint(), shown);
     }
 
     #[test]

@@ -84,7 +84,7 @@ export interface SnapshotResponse { state: ConnState; snapshot: Snapshot | null;
 export interface Access { writable: boolean; forced: boolean }
 export type ActionKind = 'restart' | 'stop' | 'start' | 'scale'
 /** A change to a service: what is sent to `POST /c/{id}/action`. */
-export interface ActionRequest { action: ActionKind; service: string; stack?: string; replica?: string; replicas?: number; dry?: boolean }
+export interface ActionRequest { action: ActionKind; service: string; stack?: string; replica?: string; replicas?: number; dry?: boolean; expect?: string }
 /** Which services get their logs collected: all but the listed ones, or only the listed ones (full names). */
 export interface Collect { only: boolean; services: string[] }
 export interface ServiceUsage { service: string; entries: number; textBytes: number }

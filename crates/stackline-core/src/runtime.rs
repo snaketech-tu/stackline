@@ -110,8 +110,13 @@ impl Runtime {
     /// Makes a change (restart, stop, start, scale). The caller checks that the
     /// connection is not read-only. Returns what was done and the matching command.
     /// Reads the state again right after, so the next look shows the change.
-    pub async fn act(&self, req: &crate::actions::Request, settings: &Settings) -> Result<crate::actions::Plan> {
+    /// `host` is the server changes were allowed for: nothing is sent unless
+    /// the state the plan is made from comes from that server.
+    pub async fn act(&self, req: &crate::actions::Request, host: &str, settings: &Settings) -> Result<crate::actions::Plan> {
         let snap = self.snapshot().ok_or_else(|| anyhow::anyhow!("Not connected yet."))?;
+        if snap.identity().as_deref() != Some(host) {
+            anyhow::bail!("{} now reaches another server than changes were allowed for.", self.cfg.name);
+        }
         let (svc, kind) = snap
             .stacks
             .iter()
@@ -121,6 +126,13 @@ impl Runtime {
         let plan = crate::actions::plan(req, svc, kind)?;
         if req.dry {
             return Ok(plan);
+        }
+        // What runs must be what was shown: a container replaced since then
+        // would otherwise be restarted or stopped without anyone seeing it.
+        if let Some(expected) = &req.expect
+            && *expected != plan.fingerprint()
+        {
+            return Err(anyhow::Error::new(crate::actions::Changed));
         }
         let client = self.client().await?;
         tracing::info!(connection = %self.cfg.name, command = %plan.command, "changing a service");
@@ -303,9 +315,12 @@ impl Manager {
 
     /// Whether a connection may be changed, and whether read-only is forced
     /// for every connection (`--read-only` or `STACKLINE_READ_ONLY`).
+    /// Changes are only allowed while the connection reaches the server
+    /// they were allowed for.
     pub fn access(&self, id: &str) -> Access {
         let forced = read_only_forced();
-        Access { writable: !forced && self.config.read().unwrap().writable.iter().any(|w| w == id), forced }
+        let host = self.runtimes.lock().unwrap().get(id).and_then(|r| r.identity());
+        Access { writable: !forced && self.config.read().unwrap().allows_changes(id, host.as_deref()), forced }
     }
 
     /// Switches a connection's read-only mode off (`writable`) or on.
@@ -313,10 +328,14 @@ impl Manager {
         if writable && read_only_forced() {
             anyhow::bail!("Stackline was started read-only, so no connection can be changed.");
         }
+        let host = self.runtimes.lock().unwrap().get(id).and_then(|r| r.identity());
+        if writable && host.is_none() {
+            anyhow::bail!("Wait until Stackline is connected: changes are allowed for the server it reaches.");
+        }
         self.update_config(|c| {
-            c.writable.retain(|w| w != id);
-            if writable {
-                c.writable.push(id.to_string());
+            c.writable.remove(id);
+            if let (true, Some(h)) = (writable, host) {
+                c.writable.insert(id.to_string(), h);
             }
         })?;
         Ok(self.access(id))

@@ -220,23 +220,27 @@ async fn a_connection_is_read_only_until_switched_and_again_on_another_host() {
     let (_, snap) = send(&app, req("GET", "/api/c/prod-eu/snapshot", None)).await;
     assert_eq!(snap["access"], json!({ "writable": false, "forced": false }));
 
+    // Changes are allowed for the server the connection reaches, so not before it is connected.
     let (status, a) = send(&app, req("PUT", "/api/c/prod-eu/access", Some(json!({ "writable": true })))).await;
-    assert_eq!(status, StatusCode::OK, "{a}");
-    assert_eq!(a["writable"], true);
-    assert_eq!(app.state.manager.config().writable, vec!["prod-eu"]);
-    // Allowed now; it fails only because nothing is connected in this test.
-    let (status, body) = send(&app, req("POST", "/api/c/prod-eu/action", Some(restart))).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert!(!body["error"].as_str().unwrap().contains("read-only"), "{body}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "{a}");
+    assert!(a["error"].as_str().unwrap().contains("connected"), "{a}");
+    assert!(app.state.manager.config().writable.is_empty());
 
-    // Pointing the connection at another host makes it read-only again.
+    // Allowed for a server, but the connection does not reach it (here: none): still refused.
+    app.state.manager.update_config(|c| drop(c.writable.insert("prod-eu".into(), "engine:A".into()))).unwrap();
+    let (status, body) = send(&app, req("POST", "/api/c/prod-eu/action", Some(restart))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let (_, snap) = send(&app, req("GET", "/api/c/prod-eu/snapshot", None)).await;
+    assert_eq!(snap["access"]["writable"], false);
+
+    // Pointing the connection at another host forgets the switch.
     let other = json!({ "name": "Prod EU", "kind": "ssh", "target": "deploy@203.0.113.11", "socket": "/var/run/docker.sock" });
     let (status, _) = send(&app, req("PUT", "/api/connections/prod-eu", Some(other))).await;
     assert_eq!(status, StatusCode::OK);
     assert!(app.state.manager.config().writable.is_empty());
 
     // So does deleting it, if it is ever added again under the same name.
-    send(&app, req("PUT", "/api/c/prod-eu/access", Some(json!({ "writable": true })))).await;
+    app.state.manager.update_config(|c| drop(c.writable.insert("prod-eu".into(), "engine:A".into()))).unwrap();
     send(&app, req("DELETE", "/api/connections/prod-eu", None)).await;
     assert!(app.state.manager.config().writable.is_empty());
 }

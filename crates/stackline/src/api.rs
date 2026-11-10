@@ -138,7 +138,7 @@ async fn update_connection(st: St, Path(id): Path<String>, Json(input): Json<Con
             cc.name = input.name.trim().to_string();
             // Another host is not the one someone allowed changes on: it starts read-only.
             if cc.kind != input.kind {
-                c.writable.retain(|w| w != &id);
+                c.writable.remove(&id);
             }
             cc.kind = input.kind;
             updated = Some(cc.clone());
@@ -154,7 +154,7 @@ async fn delete_connection(st: St, Path(id): Path<String>) -> Result<StatusCode,
         c.connections.retain(|x| x.id != id);
         c.pins.remove(&id);
         c.collect.remove(&id);
-        c.writable.retain(|w| w != &id);
+        c.writable.remove(&id);
     })?;
     let store = st.manager.store.clone();
     tokio::task::spawn_blocking(move || store.clear(Some(&id))).await.map_err(|e| anyhow::anyhow!(e))??;
@@ -194,18 +194,22 @@ async fn put_access(st: St, Path(id): Path<String>, Json(input): Json<AccessInpu
 async fn action(st: St, Path(id): Path<String>, Json(req): Json<stackline_core::actions::Request>) -> Result<Json<Value>, ApiError> {
     let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
     let access = st.manager.access(&id);
-    if !access.writable {
+    let host = st.manager.config().writable.get(&id).cloned();
+    let (true, Some(host)) = (access.writable, host) else {
         let why = if access.forced {
             "Stackline was started read-only."
         } else {
             "This connection is read-only. Switch read-only off to make changes."
         };
         return Err(ApiError(StatusCode::FORBIDDEN, why.into()));
-    }
-    let plan = rt.act(&req, &st.manager.config().settings).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    };
+    let plan = rt.act(&req, &host, &st.manager.config().settings).await.map_err(|e| {
+        let code = if e.is::<stackline_core::actions::Changed>() { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+        ApiError(code, format!("{e:#}"))
+    })?;
     // A dry run says what would happen; `done` is only sent once it happened.
     if req.dry {
-        return Ok(Json(json!({ "command": plan.command, "calls": plan.calls.len() })));
+        return Ok(Json(json!({ "command": plan.command, "calls": plan.calls.len(), "plan": plan.fingerprint() })));
     }
     Ok(Json(json!({ "done": plan.done, "command": plan.command })))
 }
