@@ -110,9 +110,9 @@ pub fn plan(req: &Request, svc: &Service, kind: StackKind) -> Result<Plan> {
         .iter()
         .filter(|t| req.replica.as_ref().is_none_or(|r| &t.slot == r))
         .filter(|t| match req.action {
-            Kind::Stop => t.state == "running",
-            Kind::Start => t.state != "running",
-            _ => true,
+            Kind::Stop => stoppable(&t.state),
+            Kind::Start => startable(&t.state),
+            _ => !matches!(t.state.as_str(), "dead" | "removing"),
         })
         .filter_map(|t| t.container_id.clone().map(|id| (id, t.container_name.clone().unwrap_or_else(|| t.slot.clone()))))
         .collect();
@@ -145,6 +145,16 @@ pub fn plan(req: &Request, svc: &Service, kind: StackKind) -> Result<Plan> {
     })
 }
 
+/// Container states `docker stop` acts on.
+fn stoppable(state: &str) -> bool {
+    matches!(state, "running" | "restarting" | "paused")
+}
+
+/// Container states `docker start` acts on. A dead or removing container cannot be started.
+fn startable(state: &str) -> bool {
+    matches!(state, "exited" | "created")
+}
+
 /// Changes a service spec as `change` says. The spec is what
 /// `GET /services/<id>` returns under `Spec`.
 pub fn change_spec(spec: &mut Value, change: SpecChange) -> Result<()> {
@@ -166,22 +176,28 @@ pub fn change_spec(spec: &mut Value, change: SpecChange) -> Result<()> {
     Ok(())
 }
 
-/// Sends the calls of a plan, in order.
+/// Sends the calls of a plan, in order. When one fails after others went
+/// through, the error says how many did, so nobody assumes nothing changed.
 pub async fn run(client: &DockerClient, plan: &Plan) -> Result<()> {
-    for call in &plan.calls {
-        match call {
-            Call::Post(path) => client.post(path, None).await?,
-            Call::UpdateService { id, change } => {
-                let svc: Value = client.get_json(&format!("/services/{id}")).await?;
-                let version =
-                    svc.pointer("/Version/Index").and_then(Value::as_u64).ok_or_else(|| anyhow!("Docker sent no service version"))?;
-                let mut spec = svc.get("Spec").cloned().ok_or_else(|| anyhow!("Docker sent no service spec"))?;
-                change_spec(&mut spec, *change)?;
-                client.post(&format!("/services/{id}/update?version={version}"), Some(&spec)).await?;
-            }
+    let n = plan.calls.len();
+    for (i, call) in plan.calls.iter().enumerate() {
+        let res = match call {
+            Call::Post(path) => client.post(path, None).await,
+            Call::UpdateService { id, change } => update_service(client, id, *change).await,
+        };
+        if let Err(e) = res {
+            return Err(if i == 0 { e } else { e.context(format!("{i} of {n} went through before this one failed")) });
         }
     }
     Ok(())
+}
+
+async fn update_service(client: &DockerClient, id: &str, change: SpecChange) -> Result<()> {
+    let svc: Value = client.get_json(&format!("/services/{id}")).await?;
+    let version = svc.pointer("/Version/Index").and_then(Value::as_u64).ok_or_else(|| anyhow!("Docker sent no service version"))?;
+    let mut spec = svc.get("Spec").cloned().ok_or_else(|| anyhow!("Docker sent no service spec"))?;
+    change_spec(&mut spec, change)?;
+    client.post(&format!("/services/{id}/update?version={version}"), Some(&spec)).await
 }
 
 #[cfg(test)]
@@ -249,6 +265,10 @@ mod tests {
         assert_eq!(plan(&req(Kind::Start), &s, StackKind::Compose).unwrap().calls, vec![Call::Post("/containers/b2/start".into())]);
         let one = Request { replica: Some("2".into()), ..req(Kind::Restart) };
         assert_eq!(plan(&one, &s, StackKind::Compose).unwrap().calls, vec![Call::Post("/containers/b2/restart".into())]);
+        // A paused container is stopped, a dead one is not started.
+        let odd = svc("compose", vec![task("1", "paused", Some("p1")), task("2", "dead", Some("d2"))]);
+        assert_eq!(plan(&req(Kind::Stop), &odd, StackKind::Compose).unwrap().calls, vec![Call::Post("/containers/p1/stop".into())]);
+        assert!(plan(&req(Kind::Start), &odd, StackKind::Compose).is_err());
         let all_up = svc("compose", vec![task("1", "running", Some("a1"))]);
         assert!(plan(&req(Kind::Start), &all_up, StackKind::Compose).unwrap_err().to_string().contains("running already"));
     }

@@ -62,6 +62,8 @@
   const GO: Record<string, View> = { o: 'overview', k: 'stacks', s: 'services', t: 'tasks', n: 'nodes', l: 'logs', c: 'connections', p: 'prefs' }
 
   function keydown(e: KeyboardEvent) {
+    // The confirm dialog takes every key while it is open.
+    if (app.ask) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault()
       if (app.palette) app.palette = false
@@ -74,7 +76,6 @@
       else history.forward()
       return
     }
-    if (app.ask) return
     if (e.key === 'Escape') {
       if (app.palette) app.palette = false
       else if (app.help) app.help = false

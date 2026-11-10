@@ -200,7 +200,7 @@ async fn action(st: St, Path(id): Path<String>, Json(req): Json<stackline_core::
         };
         return Err(ApiError(StatusCode::FORBIDDEN, why.into()));
     }
-    let plan = rt.act(&req).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let plan = rt.act(&req, &st.manager.config().settings).await.map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
     // A dry run says what would happen; `done` is only sent once it happened.
     if req.dry {
         return Ok(Json(json!({ "command": plan.command, "calls": plan.calls.len() })));

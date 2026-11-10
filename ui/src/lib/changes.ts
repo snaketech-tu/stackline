@@ -6,8 +6,10 @@ import { app } from './state.svelte'
 import type { ServiceRef, Task } from './types'
 
 const swarm = (s: ServiceRef) => s.kind === 'swarm'
-const anyRunning = (s: ServiceRef) => s.tasks.some((t) => t.state === 'running')
-const anyStopped = (s: ServiceRef) => s.tasks.some((t) => t.state !== 'running' && t.containerId)
+// The same container states the server acts on (see `actions.rs`).
+const stoppable = (t: Task) => !!t.containerId && ['running', 'restarting', 'paused'].includes(t.state)
+const startable = (t: Task) => !!t.containerId && ['exited', 'created'].includes(t.state)
+const restartable = (t: Task) => !!t.containerId && !['dead', 'removing'].includes(t.state)
 const req = (s: ServiceRef) => ({ service: s.fullName, stack: s.stack })
 
 export function restart(s: ServiceRef) {
@@ -25,9 +27,9 @@ export function scale(s: ServiceRef) {
 
 /** Which of the changes fit a service. */
 export const can = {
-  restart: (s: ServiceRef) => s.tasks.length > 0 || swarm(s),
-  stop: (s: ServiceRef) => !swarm(s) && anyRunning(s),
-  start: (s: ServiceRef) => !swarm(s) && anyStopped(s),
+  restart: (s: ServiceRef) => swarm(s) || s.tasks.some(restartable),
+  stop: (s: ServiceRef) => !swarm(s) && s.tasks.some(stoppable),
+  start: (s: ServiceRef) => !swarm(s) && s.tasks.some(startable),
   scale: (s: ServiceRef) => swarm(s) && s.mode === 'replicated',
 }
 
@@ -52,10 +54,10 @@ export function taskActs<T>(rows: T[], of: (r: T) => { s: ServiceRef; t: Task })
     const { s, t } = of(r)
     app.act({ action, ...req(s), replica: t.slot }, `${verb} ${t.containerName ?? `${s.fullName} #${t.slot}`}?`)
   }
-  const container = (r: T) => !swarm(of(r).s) && !!of(r).t.containerId
+  const container = (r: T, fits: (t: Task) => boolean) => !swarm(of(r).s) && fits(of(r).t)
   return fitting(rows, [
-    { key: 'r', label: 'Restart', icon: 'restart', run: (r) => (swarm(of(r).s) ? restart(of(r).s) : one(r, 'restart', 'Restart')), when: (r) => swarm(of(r).s) || container(r) },
-    { key: 'x', label: 'Stop', icon: 'stop', run: (r) => one(r, 'stop', 'Stop'), when: (r) => container(r) && of(r).t.state === 'running' },
-    { key: 'u', label: 'Start', icon: 'play', run: (r) => one(r, 'start', 'Start'), when: (r) => container(r) && of(r).t.state !== 'running' },
+    { key: 'r', label: 'Restart', icon: 'restart', run: (r) => (swarm(of(r).s) ? restart(of(r).s) : one(r, 'restart', 'Restart')), when: (r) => swarm(of(r).s) || container(r, restartable) },
+    { key: 'x', label: 'Stop', icon: 'stop', run: (r) => one(r, 'stop', 'Stop'), when: (r) => container(r, stoppable) },
+    { key: 'u', label: 'Start', icon: 'play', run: (r) => one(r, 'start', 'Start'), when: (r) => container(r, startable) },
   ])
 }

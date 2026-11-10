@@ -75,3 +75,19 @@ test('the inspector offers the changes too, while they are allowed', async ({ pa
   // Escape closed only the dialog, not the inspector.
   await expect(panel).toBeVisible()
 })
+
+test('the palette finds "allow changes", and the dialog keeps its keys after a click inside it', async ({ page }) => {
+  await open(page, 'services')
+  await page.keyboard.press(':')
+  await page.keyboard.type('allow changes')
+  await page.keyboard.press('Enter')
+  const ask = page.getByRole('alertdialog')
+  // The Enter that ran the command does not also confirm the dialog.
+  await expect(ask).toContainText('Allow changes on This computer?')
+  await expect(page.locator('header.top').getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+  // A click on its text takes focus off the buttons; Escape still closes it.
+  await ask.locator('p').click()
+  await page.keyboard.press('Escape')
+  await expect(ask).toHaveCount(0)
+  await expect(page.locator('header.top').getByRole('switch')).toHaveAttribute('aria-checked', 'true')
+})

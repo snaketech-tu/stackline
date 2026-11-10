@@ -94,7 +94,8 @@ impl Runtime {
 
     /// Makes a change (restart, stop, start, scale). The caller checks that the
     /// connection is not read-only. Returns what was done and the matching command.
-    pub async fn act(&self, req: &crate::actions::Request) -> Result<crate::actions::Plan> {
+    /// Reads the state again right after, so the next look shows the change.
+    pub async fn act(&self, req: &crate::actions::Request, settings: &Settings) -> Result<crate::actions::Plan> {
         let snap = self.snapshot().ok_or_else(|| anyhow::anyhow!("Not connected yet."))?;
         let (svc, kind) = snap
             .stacks
@@ -108,8 +109,9 @@ impl Runtime {
         }
         let client = self.client().await?;
         tracing::info!(connection = %self.cfg.name, command = %plan.command, "changing a service");
-        crate::actions::run(&client, &plan).await?;
-        Ok(plan)
+        let res = crate::actions::run(&client, &plan).await;
+        self.refresh(settings).await;
+        res.map(|()| plan)
     }
 
     /// Returns a working client, (re)opening the SSH tunnel when needed.

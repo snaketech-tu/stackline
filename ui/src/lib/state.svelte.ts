@@ -560,6 +560,7 @@ class AppState {
     if (this.#timer) clearTimeout(this.#timer)
     const seq = ++this.#seq
     const id = this.activeId
+    const started = Date.now()
     try {
       const now = Date.now()
       const [res, errors, deploys] = await Promise.all([
@@ -571,8 +572,9 @@ class AppState {
       this.conn = res.state
       if (res.snapshot) this.snap = res.snapshot
       this.pins = res.pins
-      if (!this.#collectBusy) this.collect = res.collect ?? { only: false, services: [] }
-      if (!this.#accessBusy) this.access = res.access ?? { writable: false, forced: false }
+      // A switch flipped while this refresh was on its way is newer than what it brings.
+      if (!this.#collectBusy && this.#collectAt < started) this.collect = res.collect ?? { only: false, services: [] }
+      if (!this.#accessBusy && this.#accessAt < started) this.access = res.access ?? { writable: false, forced: false }
       if (errors) this.errors = errors
       if (deploys) this.deploys = deploys
       this.fatal = null
@@ -616,7 +618,9 @@ class AppState {
   }
 
   #collectBusy = 0
+  #collectAt = 0
   #accessBusy = 0
+  #accessAt = 0
 
   /** Switches read-only mode of the active connection. Switching it off asks first. */
   setWritable(on: boolean) {
@@ -628,9 +632,14 @@ class AppState {
     const send = async () => {
       this.#accessBusy++
       try {
-        this.access = await put<Access>(`/c/${encodeURIComponent(this.activeId)}/access`, { writable: on })
+        const conn = this.activeId
+        const a = await put<Access>(`/c/${encodeURIComponent(conn)}/access`, { writable: on })
+        if (conn !== this.activeId) return
+        this.access = a
+        this.#accessAt = Date.now()
         this.notify(on ? `Changes are allowed on ${name}. Each one still asks first.` : `${name} is read-only again.`)
       } finally {
+        this.#accessAt = Date.now()
         this.#accessBusy--
       }
     }
@@ -682,6 +691,7 @@ class AppState {
     this.#collectBusy++
     try {
       this.collect = await put<Collect>(`/c/${encodeURIComponent(this.activeId)}/collect`, next)
+      this.#collectAt = Date.now()
     } catch (e) {
       this.collect = before
       this.notify(this.describe(e), 'err')

@@ -18,9 +18,11 @@
     const up = () => {
       el.removeEventListener('pointermove', move)
       el.removeEventListener('pointerup', up)
+      el.removeEventListener('pointercancel', up)
     }
     el.addEventListener('pointermove', move)
     el.addEventListener('pointerup', up)
+    el.addEventListener('pointercancel', up)
   }
   function resizeKey(e: KeyboardEvent) {
     if (e.key === 'ArrowUp') D.resize(D.height + 24)

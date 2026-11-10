@@ -81,7 +81,8 @@
       const top = all.filter((x) => x.kind === 'Service' && (x.right.includes('★') || /^0\/[1-9]/.test(x.right)))
       return [...top, ...all.filter((x) => x.kind === 'Error').slice(0, 3), ...all.filter((x) => x.kind === 'Page')]
     }
-    return all.filter((x) => words.every((w) => x.text.toLowerCase().includes(w))).slice(0, 30)
+    // What it is called counts as much as its keywords: "allow changes" finds "Allow changes on …".
+    return all.filter((x) => words.every((w) => `${x.label} ${x.text}`.toLowerCase().includes(w))).slice(0, 30)
   })
   $effect(() => {
     void q
