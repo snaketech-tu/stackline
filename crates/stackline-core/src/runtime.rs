@@ -224,11 +224,13 @@ pub struct Manager {
     deleting: Arc<Mutex<std::collections::HashSet<(String, String)>>>,
     /// Why the last cleanup of the store failed, until one succeeds again.
     maintenance_error: Mutex<Option<String>>,
+    /// The settings file could not be read at startup and was set aside.
+    pub config_warning: Option<String>,
 }
 
 impl Manager {
     pub fn new(paths: Paths) -> Result<Arc<Manager>> {
-        let config = AppConfig::load(&paths.config)?;
+        let (config, config_warning) = AppConfig::load_or_set_aside(&paths.config)?;
         let store = Arc::new(Store::open(&paths.store)?);
         let m = Arc::new(Manager {
             paths,
@@ -238,6 +240,7 @@ impl Manager {
             runtimes: Mutex::new(HashMap::new()),
             deleting: Arc::default(),
             maintenance_error: Mutex::default(),
+            config_warning,
         });
         let store = m.store.clone();
         tokio::task::spawn_blocking(move || {

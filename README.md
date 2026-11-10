@@ -20,7 +20,7 @@ that opens the dashboard in your browser.
 
 [Download](https://github.com/snaketech-tu/stackline/releases/latest) ·
 [Get started](#get-started) · [Connect a host](#connect-a-host) ·
-[Development](#development) · [Changelog](CHANGELOG.md)
+[Security](#security) · [Development](#development) · [Changelog](CHANGELOG.md)
 
 ## Features
 
@@ -231,6 +231,38 @@ When an update is available, Stackline shows the release notes and lets you
 choose when to install it. Every update is verified against the app's built-in
 public key before installation.
 
+## Security
+
+Stackline can reach the Docker of every server you connect, and whoever
+controls a server's Docker controls the server. This is how it keeps that
+access to you:
+
+- **Only reads by default.** Stackline sends Docker requests that read:
+  lists, logs and events. Log downloads are files written on your computer.
+- **SSH connections stay private.** Stackline reaches a server's Docker
+  socket through your own `ssh`. On macOS and Linux the tunnel ends in a
+  socket file in a folder only your user can open, which is removed when
+  Stackline stops. On Windows it still ends in a port on `127.0.0.1` that
+  other programs on the computer could use, so do not run Stackline on a
+  Windows machine you share with people you do not trust. Your private keys
+  are never read or copied.
+- **Only your browser tab can use it.** The standalone server listens on
+  `127.0.0.1`. Every API call needs the random sign-in token from the link it
+  prints; the link stores it in a cookie that only Stackline's own pages send
+  (`HttpOnly`, `SameSite=Strict`). Requests addressed to any other name than
+  `localhost` or `127.0.0.1` are refused, which keeps web pages from reaching
+  Stackline through DNS rebinding.
+- **`--host 0.0.0.0` makes it reachable from the network**, for anyone who has
+  the link. The connection is plain HTTP, so the token can be read on the way.
+  Only do this on a network you trust, or put Stackline behind a reverse proxy
+  that adds TLS. Stackline prints a warning when it listens beyond loopback.
+- **Updates are signed.** An update is installed only when its signature
+  matches the public key built into the app.
+
+To report a security problem, open a private
+[security advisory](https://github.com/snaketech-tu/stackline/security/advisories/new)
+on GitHub instead of an issue.
+
 ## Development
 
 You need **Rust stable** and **Node.js 24**. From a fresh clone:
@@ -315,12 +347,17 @@ start the demo project, build the UI and Stackline, then:
 cd e2e
 npm ci
 npx playwright install chromium
-npx playwright test
+npx playwright test --project ui --project read-only
 ```
 
 They start their own Stackline on port 7171 with an empty data folder
 (`e2e/.run`), so your own connections and stored logs are not touched. Set
 `STACKLINE_BIN` to test another build, such as `target/release/stackline`.
+
+The [swarm tests](e2e/tests/swarm.spec.ts) need the demo Swarm stack instead
+(`docker swarm init`, then `docker stack deploy -c stack.yaml shop` in
+`dev/demo`) and run with `npx playwright test --project swarm`. CI runs them in
+a job of their own.
 
 ## License
 

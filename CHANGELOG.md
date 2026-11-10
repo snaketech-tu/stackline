@@ -16,6 +16,9 @@ its GitHub release, and Stackline shows it in the update dialog.
 - **"Clear stored logs" during a read could leave part of that read behind**, and those lines then kept the cleared range from filling again
 - **A replica read for the first time held up all the others.** Reading hours of a busy replica can take minutes; other replicas and container events now go on being read meanwhile
 - **Deploys could go missing from the Overview** when a service crashed thousands of times after them
+- **`--host 0.0.0.0` answered nobody.** Other machines were turned away because they address Stackline by an IP address it did not know. Any IP address of the machine now works; names are still refused, which keeps DNS rebinding out. Stackline also warns that the link travels unencrypted
+- **A settings file that could not be read kept Stackline from starting.** It is now set aside as `config.broken.json`, Stackline starts with the default settings and says so
+- **A log line could run as a formula** when a CSV download was opened in a spreadsheet app. Cells that start with `=`, `+`, `-` or `@` now start with `'`
 - **A Docker that accepted a request and then never answered stopped log collection for good.** Requests now give up after 30 seconds without an answer and are tried again on the next poll
 
 ## 0.5.1
