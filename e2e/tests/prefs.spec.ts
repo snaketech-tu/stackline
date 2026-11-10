@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import { open } from './helpers'
+import { nav, open } from './helpers'
 
 const storeLine = (page: Page) => page.locator('section.panel', { has: page.getByRole('heading', { name: 'Local store' }) }).locator('.set .l').first()
 const entries = async (page: Page) => Number(((await storeLine(page).textContent()) ?? '').match(/([\d,.]+) entries/)?.[1].replace(/[,.]/g, '') ?? -1)
@@ -34,4 +34,15 @@ test('after clearing the store, logs are collected again', async ({ page }) => {
   await expect.poll(() => entries(page), { timeout: 40_000 }).toBeGreaterThan(100)
   await open(page, 'logs')
   await expect(page.locator('.stream .row').first()).toBeVisible()
+})
+
+test('Preferences opens at the top, not where the last page was scrolled to', async ({ page }) => {
+  await open(page, 'logs')
+  const view = page.locator('main.view')
+  // The log list makes the page long; scroll it well down.
+  await expect.poll(() => view.evaluate((el) => el.scrollHeight - el.clientHeight)).toBeGreaterThan(300)
+  await view.evaluate((el) => (el.scrollTop = el.scrollHeight))
+  await nav(page, 'Preferences')
+  await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
+  expect(await view.evaluate((el) => el.scrollTop)).toBe(0)
 })

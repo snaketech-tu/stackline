@@ -162,6 +162,25 @@ stack:shop replica:2
 node:worker-01 level:warn
 ```
 
+**Pick any time range.** Besides the buttons (Auto, 15m, 1h, 3h, 24h, 7d), the
+clock button (or `t`) takes a typed range, quick picks, exact From and To
+fields and your recent ranges. Ctrl K takes the same text. For example:
+
+```text
+90m                      last 90 minutes
+today / yesterday        the whole day (today runs until now)
+since 8:00               from 08:00 until now, following new lines
+14:00-15:30              today, or yesterday when that is still ahead
+yesterday 22:00 to 02:00 across midnight
+9.11. 8:00 - 12:00       a day without a year is the last one that passed
+2026-11-09               one whole day
+14:05 ± 5m               around a moment
+now-6h to now-2h         relative to now
+```
+
+`[` and `]` move to the range before or after (same length), `-` zooms out.
+Copy link keeps the exact range.
+
 Drag across the timeline to narrow the time range, select an error group to
 filter the stream, then expand a log entry to inspect its trace. Enable **Live**
 to follow new entries. Downloads use the current filters by default.

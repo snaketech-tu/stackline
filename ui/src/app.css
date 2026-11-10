@@ -741,3 +741,4 @@ tr.editrow>td{background:var(--panel-2);padding:16px 18px}
 .warn-t{color:var(--warn)}
 .changes{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:8px 10px;border-radius:8px;border:1px dashed color-mix(in srgb,var(--warn) 45%,var(--line));background:color-mix(in srgb,var(--warn) 6%,var(--panel))}
 .changes .muted{display:inline-flex;align-items:center;gap:5px;font-size:12px;margin-right:auto;color:var(--warn)}
+.pop.wide{width:min(440px,calc(100vw - 24px));max-width:none;max-height:min(640px,calc(100vh - 80px));grid-template-columns:minmax(0,1fr)}

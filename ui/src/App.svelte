@@ -106,6 +106,16 @@
   }
   /** The note about a reset settings file was read. */
   let configSeen = $state(false)
+
+  // Every page scrolls in the same element, so a new page would open at the
+  // place the last one was scrolled to (Preferences after the Logs page opened
+  // at its bottom). Each page and each connection starts at the top.
+  let viewEl = $state<HTMLElement>()
+  $effect(() => {
+    void app.view
+    void app.activeId
+    if (viewEl) viewEl.scrollTop = 0
+  })
 </script>
 
 <svelte:window onkeydown={keydown} />
@@ -144,7 +154,7 @@
     </header>
     <div class="area">
       <div class="content" class:with-inspector={docked} class:full={docked && app.inspectorFull}>
-        <main class="view" class:list={isList}>
+        <main class="view" class:list={isList} bind:this={viewEl}>
           {#if app.meta?.configWarning && !configSeen}
             <div class="warn-banner host-banner" role="alert">
               <span><b>Your settings were reset.</b><br /><span class="muted" style="font-size:12.5px">{app.meta.configWarning}</span></span>

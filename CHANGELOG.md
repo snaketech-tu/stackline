@@ -3,6 +3,19 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## 0.7.0
+
+### Added
+- **Query any time range on the Logs page.** Next to the range buttons, the clock button (or `t`) opens a menu where you can type a range (`90m`, `yesterday`, `14:00-15:30`, `since 8:00`, `9.11. 8:00 - 12:00`, `14:05 ± 5m`, `now-6h to now-2h`), pick a quick one (5m to 3d, today, yesterday, this week), set exact From and To times, or reuse a recent range. Ctrl K understands the same text and opens the Logs page on that range
+- **Step through time.** The arrows beside the range (or `[` and `]`) show the range of the same length before or after; **Zoom out** (or `-`) doubles it. Reaching now turns it back into a range that follows the clock
+- **Ranges that run until now**, such as `today` or `since 14:00`, keep following new lines like the presets do, Live included, and their link keeps the start
+
+### Changed
+- The Logs page names the range in words (`last 90 minutes`, `yesterday 22:00 – 02:00`) instead of bare clock times, and the download menu does the same
+
+### Fixed
+- **Pages open at the top.** Every page scrolls in the same area, so a page opened where the last one was scrolled to: Preferences, opened from the Logs page, started at its bottom. Each page, and each connection you switch to, now starts at the top
+
 ## 0.6.0
 
 Stackline now works like Kubri: lists you can drive with the keyboard, an inspector beside the list, and a log workspace that keeps running while you look around. Read-only is now a switch per connection, and with it off Stackline can restart, stop, start and scale services.

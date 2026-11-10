@@ -43,6 +43,9 @@
       ['Enter', 'Expand a line'],
       ['c', 'Copy a line'],
       ['f', 'Fill the window with the stream'],
+      ['t', 'Type or pick a time range'],
+      ['[  ]', 'The range before or after this one'],
+      ['-', 'Zoom out to twice the range'],
     ]],
   ]
 </script>
