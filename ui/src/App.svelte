@@ -1,10 +1,17 @@
 <script lang="ts">
+  // The shell, laid out like Kubri: the sidebar; a top bar with history,
+  // connection, stack picker and command search; the page with the inspector
+  // docked beside it; the log workspace below; and a status bar with the keys.
   import { onMount } from 'svelte'
-  import { app, VIEWS, type View } from './lib/state.svelte'
+  import { app, LIST_VIEWS, VIEWS, type View } from './lib/state.svelte'
   import Icon from './components/Icon.svelte'
+  import Sidebar from './components/Sidebar.svelte'
+  import StackPicker from './components/StackPicker.svelte'
   import Overview from './views/Overview.svelte'
-  import Nodes from './views/Nodes.svelte'
   import Stacks from './views/Stacks.svelte'
+  import Services from './views/Services.svelte'
+  import Tasks from './views/Tasks.svelte'
+  import Nodes from './views/Nodes.svelte'
   import Logs from './views/Logs.svelte'
   import Connections from './views/Connections.svelte'
   import Prefs from './views/Prefs.svelte'
@@ -14,51 +21,87 @@
   import UpdateDrawer from './components/UpdateDrawer.svelte'
   import ConnMenu from './components/ConnMenu.svelte'
   import Palette from './components/Palette.svelte'
+  import HelpOverlay from './components/HelpOverlay.svelte'
+  import Dock from './components/Dock.svelte'
+  import ConfirmChange from './components/ConfirmChange.svelte'
 
   onMount(() => {
     app.init()
   })
 
-  // On a single node the overview's host card says what the nodes page would.
-  let views = $derived(VIEWS.filter(([v]) => v !== 'nodes' || !app.snap || app.snap.nodes.length > 1 || app.view === 'nodes'))
   let title = $derived(VIEWS.find(([v]) => v === app.view)?.[1] ?? '')
-  let connLine = $derived.by(() => {
-    const c = app.conn
-    if (!c) return 'connecting…'
-    if (c.status === 'connecting') return 'connecting…'
-    if (c.status === 'error') return 'not connected'
-    return `${c.endpoint ?? ''}${c.latencyMs !== null ? ` · ${c.latencyMs} ms` : ''}`
-  })
   let latest = $derived(app.update?.releases[0])
   let showUpdate = $derived(app.updateAvailable && !!latest && (app.dismissed !== latest.version || app.update?.phase !== 'available'))
+  let isList = $derived(LIST_VIEWS.includes(app.view))
+  let needsConn = $derived(app.view !== 'connections' && app.view !== 'prefs')
+  let docked = $derived(needsConn && !!app.snap && (app.drawer?.kind === 'service' || app.drawer?.kind === 'node'))
   const THEME_ICON = { system: 'monitor', light: 'sun', dark: 'moon' } as const
   const THEME_NAME = { system: 'follow system', light: 'light', dark: 'dark' } as const
   const mac = /Mac|iPhone|iPad/.test(navigator.platform)
 
-  // Two-key shortcuts: g then o / s / l / n / c / p.
-  const GO: Record<string, View> = { o: 'overview', s: 'stacks', l: 'logs', n: 'nodes', c: 'connections', p: 'prefs' }
-  let gAt = 0
+  let status = $derived.by(() => {
+    const c = app.conn
+    if (!c || c.status === 'connecting') return { cls: 'off', text: `Connecting · ${app.active?.name ?? '…'}` }
+    if (c.status === 'error') return { cls: 'err', text: `Not connected · ${app.active?.name ?? ''}` }
+    return { cls: '', text: `Live · ${app.active?.name ?? ''}${c.latencyMs !== null ? ` · ${c.latencyMs} ms` : ''}` }
+  })
+
+  /** The keys the status bar names for the current page. */
+  let hints = $derived.by((): [string, string][] => {
+    const base: [string, string][] = [[':', 'command'], ['/', 'filter']]
+    if (isList) {
+      const open = app.view === 'stacks' ? 'services' : app.view === 'services' ? 'tasks' : app.view === 'nodes' ? 'tasks' : 'service'
+      const change: [string, string][] = app.access.writable && (app.view === 'services' || app.view === 'tasks') ? [['r', 'restart']] : []
+      return [...base, ['↵', open], ['d', 'inspect'], ['l', 'logs'], ...change, ...(app.view === 'services' ? ([['p', 'pin']] as [string, string][]) : []), ['?', 'help']]
+    }
+    if (app.view === 'logs') return [[':', 'command'], ['/', 'search'], ['j k', 'move'], ['f', 'fill window'], ['?', 'help']]
+    return [[':', 'command'], ['g s', 'services'], ['g l', 'logs'], ['?', 'help']]
+  })
+
+  // Two-key shortcuts: g then a letter.
+  const GO: Record<string, View> = { o: 'overview', k: 'stacks', s: 'services', t: 'tasks', n: 'nodes', l: 'logs', c: 'connections', p: 'prefs' }
 
   function keydown(e: KeyboardEvent) {
+    // The confirm dialog takes every key while it is open.
+    if (app.ask) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
       e.preventDefault()
-      app.palette = !app.palette
+      if (app.palette) app.palette = false
+      else app.openPalette()
+      return
+    }
+    if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault()
+      if (e.key === 'ArrowLeft') history.back()
+      else history.forward()
       return
     }
     if (e.key === 'Escape') {
       if (app.palette) app.palette = false
+      else if (app.help) app.help = false
       else if (app.drawer) app.drawer = null
       else if (app.logs.maxi) app.logs.maxi = false
       return
     }
     const tag = (document.activeElement as HTMLElement | null)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.palette || e.ctrlKey || e.metaKey || e.altKey) return
-    if (gAt && Date.now() - gAt < 1000 && GO[e.key]) {
-      gAt = 0
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.palette || app.help || e.ctrlKey || e.metaKey || e.altKey) return
+    if (app.awaitingGo() && GO[e.key]) {
+      app.goAt = 0
       app.drawer = null
       app.go(GO[e.key])
-    } else {
-      gAt = e.key === 'g' ? Date.now() : 0
+      e.preventDefault()
+      // The list's own key for this letter must not run too.
+      e.stopImmediatePropagation()
+      return
+    }
+    app.goAt = e.key === 'g' ? Date.now() : 0
+    if (e.key === ':') {
+      e.preventDefault()
+      app.openPalette()
+    } else if (e.key === '?') {
+      app.help = true
+    } else if (e.key === 'w') {
+      app.dock.toggle()
     }
   }
   /** The note about a reset settings file was read. */
@@ -68,37 +111,15 @@
 <svelte:window onkeydown={keydown} />
 
 <div class="app">
-  <aside class="side">
-    <div class="brand">
-      <svg width="32" height="27" viewBox="0 0 96 80" aria-hidden="true">
-        <use href="/brand/stackline-mark.svg#stackline" />
-      </svg>
-      <div>Stackline<small>Read-only</small></div>
-    </div>
-    <nav class="nav">
-      {#each views as [v, label] (v)}
-        <a href="#{v}" aria-current={app.view === v ? 'page' : undefined}>
-          <Icon name={v} /><span class="t">{label}</span>
-          {#if v === 'logs' && app.errors?.lastHour}<span class="cnt hide-sm" title="Errors in the last hour">{app.errors.lastHour}</span>{/if}
-        </a>
-      {/each}
-    </nav>
-    <div class="foot">
-      <span class="ro"><Icon name="lock" size={12} />Read-only mode</span>
-      <span>Only GET calls reach the Docker API. Nothing here can change your containers.</span>
-      {#if app.meta}
-        <span class="mono" style="font-size:11px">
-          v{app.meta.version}
-          {#if app.updateAvailable && latest}· <button class="linkish" onclick={() => (app.drawer = { kind: 'update' })}>v{latest.version} available</button>{/if}
-        </span>
-      {/if}
-    </div>
-  </aside>
+  <Sidebar />
   <div class="main">
     <header class="top">
-      <h1>{title}</h1>
+      <div class="history">
+        <button class="sq" onclick={() => history.back()} title="Back (Alt ←)" aria-label="Back"><Icon name="back" size={16} /></button>
+        <button class="sq" onclick={() => history.forward()} title="Forward (Alt →)" aria-label="Forward"><Icon name="forward" size={16} /></button>
+      </div>
       <ConnMenu />
-      <span class="conn">{connLine}</span>
+      {#if app.snap && app.snap.stacks.length}<span class="divider hide-sm"></span><StackPicker />{/if}
       <span class="spacer"></span>
       {#if showUpdate && latest}
         <button class="ctl update-pill" onclick={() => (app.drawer = { kind: 'update' })}>
@@ -106,62 +127,94 @@
           {#if app.update?.phase === 'downloading' || app.update?.phase === 'installing'}Updating…{:else if app.update?.phase === 'restarting'}Restarting…{:else}Update to {latest.version}{/if}
         </button>
       {/if}
-      <button class="ctl cmdk" onclick={() => (app.palette = true)} aria-label="Jump to a service, stack or page">
-        <Icon name="search" size={14} /><span class="t">Jump to a service, stack or page</span><kbd>{mac ? '⌘' : 'Ctrl'} K</kbd>
+      <button class="ctl cmdk" onclick={() => app.openPalette()} aria-label="Search or run a command">
+        <Icon name="search" size={14} /><span class="t">Search or run a command</span><kbd>{mac ? '⌘' : 'Ctrl'} K</kbd>
       </button>
-      <button class="ctl icon" onclick={() => app.cycleTheme()} title="Theme: {THEME_NAME[app.theme]}. Click to change." aria-label="Theme: {THEME_NAME[app.theme]}">
+      <button class="sq bordered" onclick={() => app.cycleTheme()} title="Theme: {THEME_NAME[app.theme]}. Click to change." aria-label="Theme: {THEME_NAME[app.theme]}">
         <Icon name={THEME_ICON[app.theme]} size={15} />
       </button>
+      {#if needsConn && app.snap}
+        <button class="ro-badge" class:open={app.access.writable} class:forced={app.access.forced} role="switch" aria-checked={!app.access.writable}
+          onclick={() => app.setWritable(!app.access.writable)}
+          title={app.access.forced ? 'Stackline was started with --read-only: nothing can be changed.' : app.access.writable ? `Changes are allowed on ${app.active?.name}. Click to make it read-only again.` : `Read-only: only reads reach Docker on ${app.active?.name}. Click to allow restarts, stops, starts and scaling.`}>
+          <Icon name={app.access.writable ? 'unlock' : 'lock'} size={13} /><span class="hide-sm">{app.access.writable ? 'Changes allowed' : 'Read-only'}</span>
+        </button>
+      {/if}
+      <button class="sq bordered help-btn" onclick={() => (app.help = true)} title="Keys and commands (?)" aria-label="Keys and commands">?</button>
     </header>
-    <main class="view">
-      {#if app.meta?.configWarning && !configSeen}
-        <div class="warn-banner host-banner" role="alert">
-          <span><b>Your settings were reset.</b><br /><span class="muted" style="font-size:12.5px">{app.meta.configWarning}</span></span>
-          <span class="spacer"></span>
-          <button class="btn sm" onclick={() => (configSeen = true)}>OK</button>
-        </div>
-      {/if}
-      {#if app.fatal}
-        <div class="center-empty"><b style="color:var(--fg)">{app.fatal}</b><button class="btn" onclick={() => location.reload()}>Try again</button></div>
-      {:else if app.view === 'connections'}
-        <Connections />
-      {:else if app.view === 'prefs'}
-        <Prefs />
-      {:else if app.conn?.status === 'error' && !app.snap}
-        <div class="err-banner"><b>Cannot reach {app.active?.name ?? 'this connection'}.</b><span>{app.conn.error}</span></div>
-        <div class="status-line"><span class="spinner"></span>Retrying every few seconds. Check the connection under <a href="#connections">Connections</a>.</div>
-      {:else if !app.snap}
-        <div class="center-empty"><span class="spinner"></span>Connecting to {app.active?.name ?? '…'}</div>
-      {:else}
-        {#if app.conn?.status === 'error'}
-          <div class="err-banner"><b>Connection lost.</b><span>{app.conn.error} Showing the last known state.</span></div>
-        {/if}
-        {#if app.conn?.otherHost}
-          <div class="warn-banner host-banner" role="alert">
-            <span><b>{app.active?.name ?? 'This connection'} now reaches another server.</b><br /><span class="muted" style="font-size:12.5px">The stored logs come from the server it reached before. No logs are collected until you choose what happens to them.</span></span>
-            <span class="spacer"></span>
-            <button class="btn sm" onclick={() => app.acceptHost(true)}>Keep the old logs</button>
-            <button class="btn sm danger" onclick={() => app.acceptHost(false)}>Delete the old logs</button>
-          </div>
-        {/if}
-        <!-- Views start fresh for each connection, so nothing from another host lingers. -->
-        {#key app.activeId}
-          {#if app.view === 'overview'}<Overview />
-          {:else if app.view === 'nodes'}<Nodes />
-          {:else if app.view === 'stacks'}<Stacks />
-          {:else if app.view === 'logs'}<Logs />{/if}
-        {/key}
-      {/if}
-    </main>
+    <div class="area">
+      <div class="content" class:with-inspector={docked} class:full={docked && app.inspectorFull}>
+        <main class="view" class:list={isList}>
+          {#if app.meta?.configWarning && !configSeen}
+            <div class="warn-banner host-banner" role="alert">
+              <span><b>Your settings were reset.</b><br /><span class="muted" style="font-size:12.5px">{app.meta.configWarning}</span></span>
+              <span class="spacer"></span>
+              <button class="btn sm" onclick={() => (configSeen = true)}>OK</button>
+            </div>
+          {/if}
+          {#if app.fatal}
+            <div class="center-empty"><b style="color:var(--fg)">{app.fatal}</b><button class="btn" onclick={() => location.reload()}>Try again</button></div>
+          {:else if app.view === 'connections'}
+            <div class="phead"><nav class="crumbs" aria-label="Where you are"><span>Stackline</span><Icon name="chev" size={12} /><span>{title}</span></nav><div class="ptitle"><h2>{title}</h2></div></div>
+            <Connections />
+          {:else if app.view === 'prefs'}
+            <div class="phead"><nav class="crumbs" aria-label="Where you are"><span>Stackline</span><Icon name="chev" size={12} /><span>{title}</span></nav><div class="ptitle"><h2>{title}</h2></div></div>
+            <Prefs />
+          {:else if app.conn?.status === 'error' && !app.snap}
+            <div class="err-banner"><b>Cannot reach {app.active?.name ?? 'this connection'}.</b><span>{app.conn.error}</span></div>
+            <div class="status-line"><span class="spinner"></span>Retrying every few seconds. Check the connection under <a href="#connections">Connections</a>.</div>
+          {:else if !app.snap}
+            <div class="center-empty"><span class="spinner"></span>Connecting to {app.active?.name ?? '…'}</div>
+          {:else}
+            {#if app.conn?.status === 'error'}
+              <div class="err-banner"><b>Connection lost.</b><span>{app.conn.error} Showing the last known state.</span></div>
+            {/if}
+            {#if app.conn?.otherHost}
+              <div class="warn-banner host-banner" role="alert">
+                <span><b>{app.active?.name ?? 'This connection'} now reaches another server.</b><br /><span class="muted" style="font-size:12.5px">The stored logs come from the server it reached before. No logs are collected until you choose what happens to them.</span></span>
+                <span class="spacer"></span>
+                <button class="btn sm" onclick={() => app.acceptHost(true)}>Keep the old logs</button>
+                <button class="btn sm danger" onclick={() => app.acceptHost(false)}>Delete the old logs</button>
+              </div>
+            {/if}
+            {#if !isList}
+              <div class="phead">
+                <nav class="crumbs" aria-label="Where you are"><span>{app.active?.name}</span><Icon name="chev" size={12} /><span>{title}</span></nav>
+                <div class="ptitle"><h2>{title}</h2></div>
+              </div>
+            {/if}
+            <!-- Views start fresh for each connection, so nothing from another host lingers. -->
+            {#key app.activeId}
+              {#if app.view === 'overview'}<Overview />
+              {:else if app.view === 'stacks'}<Stacks />
+              {:else if app.view === 'services'}<Services />
+              {:else if app.view === 'tasks'}<Tasks />
+              {:else if app.view === 'nodes'}<Nodes />
+              {:else if app.view === 'logs'}<Logs />{/if}
+            {/key}
+          {/if}
+        </main>
+        {#if docked && app.drawer?.kind === 'service'}
+          {#key app.drawer.key}<ServiceDrawer key={app.drawer.key} tab={app.drawer.tab} />{/key}
+        {:else if docked && app.drawer?.kind === 'node'}<NodeDrawer id={app.drawer.id} />{/if}
+      </div>
+      {#if app.dock.tabs.length && app.snap}<Dock />{/if}
+    </div>
+    <footer class="statusbar">
+      <span class="status {status.cls}"><span class="dot {status.cls}"></span>{status.text}</span>
+      <span class="spacer"></span>
+      <span class="hints hide-sm">
+        {#each hints as [k, what] (k)}<span><kbd>{k}</kbd>{what}</span>{/each}
+      </span>
+    </footer>
   </div>
 </div>
 
-{#if app.drawer?.kind === 'service'}
-  {#key app.drawer.key}<ServiceDrawer key={app.drawer.key} tab={app.drawer.tab} />{/key}
-{:else if app.drawer?.kind === 'node'}<NodeDrawer id={app.drawer.id} />
-{:else if app.drawer?.kind === 'connection'}<ConnectionDrawer id={app.drawer.id} />
+{#if app.drawer?.kind === 'connection'}<ConnectionDrawer id={app.drawer.id} />
 {:else if app.drawer?.kind === 'update'}<UpdateDrawer />{/if}
 
 {#if app.palette}<Palette />{/if}
+{#if app.help}<HelpOverlay />{/if}
+{#if app.ask}{#key app.ask}<ConfirmChange ask={app.ask} />{/key}{/if}
 
 {#if app.toast}<div class="toast" class:err={app.toast.kind === 'err'} role="status">{app.toast.text}</div>{/if}

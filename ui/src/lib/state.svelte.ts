@@ -5,22 +5,30 @@ import { untrack } from 'svelte'
 import { SvelteSet } from 'svelte/reactivity'
 import { ApiError, api, fetchDeploys, post, put, type LogParams } from './api'
 import { beforeEvent } from './events'
+import { load, save } from './storage'
+import { DockState } from './dock.svelte'
+import { newLists, type ListView } from './lists.svelte'
 import type {
-  Alert, AlertsResponse, Collect, ConnState, Connection, Deploy, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
+  Access, ActionRequest, Alert, AlertsResponse, Collect, ConnState, Connection, Deploy, DockerEvent, ErrorSummary, Level, Meta, ServiceRef, Settings, Snapshot, SnapshotResponse,
   UpdateState,
 } from './types'
 
-export type View = 'overview' | 'nodes' | 'stacks' | 'logs' | 'connections' | 'prefs'
-export const VIEWS: [View, string][] = [
-  ['overview', 'Overview'],
-  ['nodes', 'Nodes'],
-  ['stacks', 'Stacks & services'],
-  ['logs', 'Logs'],
-  ['connections', 'Connections'],
-  ['prefs', 'Preferences'],
+export type View = 'overview' | 'stacks' | 'services' | 'tasks' | 'nodes' | 'logs' | 'connections' | 'prefs'
+/** Every page: its name, and the group the sidebar shows it in. */
+export const VIEWS: [View, string, string][] = [
+  ['overview', 'Overview', ''],
+  ['stacks', 'Stacks', 'Workloads'],
+  ['services', 'Services', 'Workloads'],
+  ['tasks', 'Tasks', 'Workloads'],
+  ['nodes', 'Nodes', 'Cluster'],
+  ['logs', 'Logs', 'Logs'],
+  ['connections', 'Connections', 'App'],
+  ['prefs', 'Preferences', 'App'],
 ]
+/** The lists, which have a cursor, tabs and a drill-down. */
+export const LIST_VIEWS: View[] = ['stacks', 'services', 'tasks', 'nodes']
 
-export type ServiceTab = 'overview' | 'logs' | 'errors'
+export type ServiceTab = 'overview' | 'events' | 'config' | 'logs' | 'errors'
 export type Drawer =
   | { kind: 'service'; key: string; tab: ServiceTab }
   | { kind: 'node'; id: string }
@@ -33,23 +41,8 @@ export type Preset = 'auto' | '15m' | '1h' | '3h' | '24h' | '7d'
 /** Minutes per fixed preset. `auto` starts at the oldest stored line instead. */
 export const PRESETS: Record<Exclude<Preset, 'auto'>, number> = { '15m': 15, '1h': 60, '3h': 180, '24h': 1440, '7d': 10080 }
 export const LEVELS: Level[] = ['ERROR', 'WARN', 'INFO', 'DEBUG']
-export type StackFilter = 'all' | 'problems' | 'pinned'
 
-/** Reads a remembered setting. Settings saved before the rename from swarmdash to Stackline are read under their old name. */
-export function load(key: string): string | null {
-  try {
-    return localStorage.getItem(key) ?? localStorage.getItem(key.replace(/^stackline-/, 'swarmdash-'))
-  } catch {
-    return null
-  }
-}
-export function save(key: string, v: string) {
-  try {
-    localStorage.setItem(key, v)
-  } catch {
-    // Storage blocked: the setting just isn't remembered.
-  }
-}
+export { load, save }
 
 /** The pin key of a service: `stack/service`. */
 export const pinKey = (s: { stack: string; name: string }) => `${s.stack}/${s.name}`
@@ -226,6 +219,21 @@ class LogsState extends LogFilters {
   }
 }
 
+/** A change waiting for a yes. `run` gets the number typed when the dialog asks for replicas. */
+export interface Ask {
+  title: string
+  text: string
+  /** The docker command it amounts to. */
+  command?: string
+  confirm: string
+  danger?: boolean
+  /** Asks for a number of replicas, starting at this one. */
+  replicas?: number
+  /** The service a scale is for, so the command can follow the typed number. */
+  scaleOf?: string
+  run: (replicas?: number) => Promise<void>
+}
+
 class AppState {
   meta = $state<Meta | null>(null)
   connections = $state<Connection[]>([])
@@ -236,6 +244,10 @@ class AppState {
   pins = $state<string[]>([])
   /** Which services of the active connection have their logs collected. */
   collect = $state<Collect>({ only: false, services: [] })
+  /** Whether the active connection allows changes. Read-only until someone switches it off. */
+  access = $state<Access>({ writable: false, forced: false })
+  /** A change waiting for a yes in the confirm dialog. */
+  ask = $state<Ask | null>(null)
   errors = $state.raw<ErrorSummary | null>(null)
   /** Deploys of the last 24 hours, newest first, with the errors new since each. */
   deploys = $state.raw<Deploy[]>([])
@@ -244,11 +256,21 @@ class AppState {
   settings = $state<Settings | null>(null)
   update = $state<UpdateState | null>(null)
   view = $state<View>('overview')
+  /** What the address says after the page name: `services?stack=shop` narrows the services to one stack. */
+  params = $state.raw(new URLSearchParams())
   drawer = $state<Drawer>(null)
+  /** The inspector covers the list instead of standing beside it. */
+  inspectorFull = $state(load('stackline-drawer-full') === '1')
   palette = $state(false)
-  /** Filters of the stacks view, set from the overview too. */
-  stackFilter = $state<StackFilter>((load('stackline-stack-filter') as StackFilter) || 'all')
-  stackQ = $state(load('stackline-stack-q') ?? '')
+  /** What the command palette starts with. */
+  paletteQ = $state('')
+  help = $state(false)
+  /** The stack the lists are narrowed to (the top bar's stack picker); empty for all stacks. */
+  scope = $state('')
+  /** Filter, tab, sort and cursor of each list. */
+  lists = newLists()
+  /** The log workspace at the bottom. */
+  dock = new DockState()
   theme = $state<Theme>((load('stackline-theme') as Theme) || 'system')
   toast = $state<{ text: string; kind: 'ok' | 'err' } | null>(null)
   /** Set when the API cannot be used at all (server gone, signed out). */
@@ -285,6 +307,8 @@ class AppState {
 
   constructor() {
     this.logs.restoreSources(this.activeId)
+    this.dock.restore(this.activeId)
+    this.scope = load(`stackline-scope-${this.activeId}`) ?? ''
     // Filters survive moving around the app and restarting it. Sources are kept per connection.
     $effect.root(() => {
       $effect(() => {
@@ -299,8 +323,16 @@ class AppState {
         if (location.hash !== h) history.replaceState(history.state, '', h)
       })
       $effect(() => {
-        save('stackline-stack-filter', this.stackFilter)
-        save('stackline-stack-q', this.stackQ)
+        save(`stackline-scope-${untrack(() => this.activeId)}`, this.scope)
+      })
+      // The filter and tab of each list survive a restart.
+      $effect(() => {
+        for (const [v, l] of Object.entries(this.lists)) save(`stackline-list-${v}`, JSON.stringify({ q: l.q, tab: l.tab }))
+      })
+      // A stack that is gone (removed, or another connection) no longer narrows the lists.
+      $effect(() => {
+        const stacks = this.snap?.stacks
+        if (stacks && this.scope && !stacks.some((s) => s.name === this.scope)) untrack(() => (this.scope = ''))
       })
     })
   }
@@ -330,6 +362,8 @@ class AppState {
         this.activeId = connections.find((c) => c.id === load('stackline-conn'))?.id ?? connections[0]?.id ?? 'local'
         if (missing) this.notify(`This link is for the connection “${missing}”, which is not set up here. It shows ${this.active?.name ?? 'another one'} instead.`, 'err')
         else this.logs.restoreSources(this.activeId)
+        this.dock.restore(this.activeId)
+        this.scope = load(`stackline-scope-${this.activeId}`) ?? ''
       } else if (this.#linkConn) save('stackline-conn', this.activeId)
       this.#linkConn = null
     } catch (e) {
@@ -435,7 +469,9 @@ class AppState {
     const at = hash.indexOf('?')
     const h = (at < 0 ? hash : hash.slice(0, at)) as View
     this.view = VIEWS.some(([v]) => v === h) ? h : 'overview'
-    if (this.view === 'logs' && at >= 0) this.openLink(new URLSearchParams(hash.slice(at + 1)))
+    const params = new URLSearchParams(at < 0 ? '' : hash.slice(at + 1))
+    this.params = this.view === 'logs' ? new URLSearchParams() : params
+    if (this.view === 'logs' && at >= 0) this.openLink(params)
   }
 
   /** Opens a log link: its connection, then its filters. */
@@ -458,8 +494,45 @@ class AppState {
   }
 
   go(view: View) {
-    if (location.hash.slice(1).split('?')[0] === view) this.view = view
+    if (location.hash.slice(1) === view) this.view = view
     else location.hash = view
+  }
+
+  /**
+   * Opens a list narrowed by `params` (`stack`, `service` or `node`), as a
+   * step of Back, so Back returns to the list it came from.
+   */
+  drill(view: View, params: Record<string, string> = {}, cursor?: string) {
+    if (cursor !== undefined && (LIST_VIEWS as string[]).includes(view)) this.lists[view as ListView].cursor = cursor
+    const q = new URLSearchParams(params).toString()
+    const h = q ? `${view}?${q}` : view
+    if (location.hash.slice(1) === h) this.route()
+    else location.hash = h
+  }
+
+  /** The services list on a tab, all stacks unless the picker narrows them. */
+  showServices(tab: 'all' | 'attention' | 'pinned' = 'all') {
+    const l = this.lists.services
+    l.q = ''
+    l.tab = tab
+    this.drill('services')
+  }
+
+  setInspectorFull(v: boolean) {
+    this.inspectorFull = v
+    save('stackline-drawer-full', v ? '1' : '0')
+  }
+
+  /** When `g` was pressed: the next key picks a page (g s, g l…) and is not a list's key. */
+  goAt = 0
+  awaitingGo(): boolean {
+    return Date.now() - this.goAt < 1000
+  }
+
+  /** Opens the command palette, optionally with text already typed. */
+  openPalette(q = '') {
+    this.paletteQ = q
+    this.palette = true
   }
 
   select(id: string) {
@@ -471,11 +544,14 @@ class AppState {
     this.errors = null
     this.pins = []
     this.collect = { only: false, services: [] }
+    this.access = { writable: false, forced: false }
+    this.ask = null
     this.drawer = null
     this.logs.reset()
     this.logs.restoreSources(id)
-    this.stackQ = ''
-    this.stackFilter = 'all'
+    for (const l of Object.values(this.lists)) l.reset()
+    this.scope = load(`stackline-scope-${id}`) ?? ''
+    this.dock.restore(id)
     this.poll()
   }
 
@@ -484,6 +560,7 @@ class AppState {
     if (this.#timer) clearTimeout(this.#timer)
     const seq = ++this.#seq
     const id = this.activeId
+    const started = Date.now()
     try {
       const now = Date.now()
       const [res, errors, deploys] = await Promise.all([
@@ -495,7 +572,9 @@ class AppState {
       this.conn = res.state
       if (res.snapshot) this.snap = res.snapshot
       this.pins = res.pins
-      if (!this.#collectBusy) this.collect = res.collect ?? { only: false, services: [] }
+      // A switch flipped while this refresh was on its way is newer than what it brings.
+      if (!this.#collectBusy && this.#collectAt < started) this.collect = res.collect ?? { only: false, services: [] }
+      if (!this.#accessBusy && this.#accessAt < started) this.access = res.access ?? { writable: false, forced: false }
       if (errors) this.errors = errors
       if (deploys) this.deploys = deploys
       this.fatal = null
@@ -554,6 +633,73 @@ class AppState {
   }
 
   #collectBusy = 0
+  #collectAt = 0
+  #accessBusy = 0
+  #accessAt = 0
+
+  /** Switches read-only mode of the active connection. Switching it off asks first. */
+  setWritable(on: boolean) {
+    if (this.access.forced) {
+      this.notify('Stackline was started with --read-only, so nothing can be changed. Start it without the flag to allow changes.', 'err')
+      return
+    }
+    const name = this.active?.name ?? 'this connection'
+    const send = async () => {
+      this.#accessBusy++
+      try {
+        const conn = this.activeId
+        const a = await put<Access>(`/c/${encodeURIComponent(conn)}/access`, { writable: on })
+        if (conn !== this.activeId) return
+        this.access = a
+        this.#accessAt = Date.now()
+        this.notify(on ? `Changes are allowed on ${name}. Each one still asks first.` : `${name} is read-only again.`)
+      } finally {
+        this.#accessAt = Date.now()
+        this.#accessBusy--
+      }
+    }
+    if (!on) {
+      send().catch((e) => this.notify(this.describe(e), 'err'))
+      return
+    }
+    this.ask = {
+      title: `Allow changes on ${name}?`,
+      text: 'Stackline can then restart, stop, start and scale services here. It never creates or removes anything, and every change asks first and shows the docker command it runs. This stays on for this connection until you switch it back.',
+      confirm: 'Allow changes',
+      run: send,
+    }
+  }
+
+  /** Asks to make a change, showing the docker command it runs, and makes it on a yes. */
+  async act(req: ActionRequest, title: string) {
+    if (!this.access.writable) return
+    const conn = this.activeId
+    const path = `/c/${encodeURIComponent(conn)}/action`
+    let command = ''
+    // The plan shown; the server refuses to run another one (a container replaced meanwhile).
+    let plan: string | undefined
+    try {
+      if (req.action !== 'scale') ({ command, plan } = await post<{ command: string; plan: string }>(path, { ...req, dry: true }))
+    } catch (e) {
+      this.notify(this.describe(e), 'err')
+      return
+    }
+    if (conn !== this.activeId) return
+    this.ask = {
+      title,
+      text: req.action === 'stop' ? 'The containers stay stopped until someone starts them again.' : req.action === 'scale' ? 'Swarm starts or removes tasks until this many run. 0 stops the service.' : '',
+      command,
+      replicas: req.action === 'scale' ? (req.replicas ?? 1) : undefined,
+      scaleOf: req.action === 'scale' ? req.service : undefined,
+      confirm: req.action === 'restart' ? 'Restart' : req.action === 'stop' ? 'Stop' : req.action === 'start' ? 'Start' : 'Scale',
+      danger: req.action === 'stop',
+      run: async (n) => {
+        const r = await post<{ done: string }>(path, { ...req, replicas: n ?? req.replicas, expect: plan })
+        this.notify(r.done)
+        if (conn === this.activeId) this.poll()
+      },
+    }
+  }
 
   async saveCollect(next: Collect) {
     const before = this.collect
@@ -561,6 +707,7 @@ class AppState {
     this.#collectBusy++
     try {
       this.collect = await put<Collect>(`/c/${encodeURIComponent(this.activeId)}/collect`, next)
+      this.#collectAt = Date.now()
     } catch (e) {
       this.collect = before
       this.notify(this.describe(e), 'err')

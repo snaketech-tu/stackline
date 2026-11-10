@@ -107,6 +107,71 @@ impl Runtime {
         Ok(Some(crate::details::fetch(&client, svc, kind).await?))
     }
 
+    /// Makes a change (restart, stop, start, scale). The caller checks that the
+    /// connection is not read-only. Returns what was done and the matching command.
+    /// Reads the state again right after, so the next look shows the change.
+    /// `host` is the server changes were allowed for: nothing is sent unless
+    /// the state the plan is made from comes from that server.
+    /// Every change is also stored as an event of kind `action`, so it shows
+    /// on the time graphs next to what it was meant to fix.
+    pub async fn act(
+        &self,
+        req: &crate::actions::Request,
+        host: &str,
+        settings: &Settings,
+        store: &Arc<Store>,
+    ) -> Result<crate::actions::Plan> {
+        let snap = self.snapshot().ok_or_else(|| anyhow::anyhow!("Not connected yet."))?;
+        if snap.identity().as_deref() != Some(host) {
+            anyhow::bail!("{} now reaches another server than changes were allowed for.", self.cfg.name);
+        }
+        let (svc, kind) = snap
+            .stacks
+            .iter()
+            .filter(|st| req.stack.as_ref().is_none_or(|n| &st.name == n))
+            .find_map(|st| st.services.iter().find(|s| s.full_name == req.service).map(|s| (s, st.kind)))
+            .ok_or_else(|| anyhow::anyhow!("{} is not running here.", req.service))?;
+        let plan = crate::actions::plan(req, svc, kind)?;
+        if req.dry {
+            return Ok(plan);
+        }
+        // What runs must be what was shown: a container replaced since then
+        // would otherwise be restarted or stopped without anyone seeing it.
+        if let Some(expected) = &req.expect
+            && *expected != plan.fingerprint()
+        {
+            return Err(anyhow::Error::new(crate::actions::Changed));
+        }
+        let client = self.client().await?;
+        tracing::info!(connection = %self.cfg.name, command = %plan.command, "changing a service");
+        let res = crate::actions::run(&client, &plan).await;
+        let ts = chrono::Utc::now().timestamp_micros();
+        let outcome = match &res {
+            Ok(()) => "done".to_string(),
+            Err(e) => format!("failed: {e:#}"),
+        };
+        let event = crate::events::Event {
+            key: format!("action:{ts}:{}", plan.fingerprint()),
+            ts,
+            stack: svc.stack.clone(),
+            service: svc.full_name.clone(),
+            replica: req.replica.clone().unwrap_or_default(),
+            node: String::new(),
+            source: String::new(),
+            kind: crate::events::Kind::Action,
+            exit_code: None,
+            detail: Some(format!("{} · {outcome}", plan.command)),
+        };
+        let (store, conn) = (store.clone(), self.cfg.id.clone());
+        match tokio::task::spawn_blocking(move || store.insert_events(&conn, &[event])).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => tracing::warn!("could not store the change made on {}: {e:#}", self.cfg.name),
+            Err(_) => {}
+        }
+        self.refresh(settings).await;
+        res.map(|()| plan)
+    }
+
     /// Returns a working client, (re)opening the SSH tunnel when needed.
     async fn client(&self) -> Result<DockerClient> {
         let mut guard = self.client.lock().await;
@@ -213,6 +278,28 @@ fn explain(msg: &str) -> String {
     }
 }
 
+/// Whether changes are allowed on a connection.
+#[derive(Clone, Copy, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    pub writable: bool,
+    /// Read-only for every connection, set when Stackline was started.
+    pub forced: bool,
+}
+
+static FORCE_READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Makes every connection read-only for as long as Stackline runs (`--read-only`).
+pub fn force_read_only() {
+    FORCE_READ_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `--read-only` or `STACKLINE_READ_ONLY=1`: nothing can be changed.
+pub fn read_only_forced() -> bool {
+    FORCE_READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+        || crate::config::env_var("READ_ONLY").is_some_and(|v| !matches!(v.as_str(), "" | "0" | "false" | "no"))
+}
+
 /// Owns configuration, the log store and all opened connections.
 pub struct Manager {
     paths: Paths,
@@ -255,6 +342,34 @@ impl Manager {
 
     pub fn config(&self) -> AppConfig {
         self.config.read().unwrap().clone()
+    }
+
+    /// Whether a connection may be changed, and whether read-only is forced
+    /// for every connection (`--read-only` or `STACKLINE_READ_ONLY`).
+    /// Changes are only allowed while the connection reaches the server
+    /// they were allowed for.
+    pub fn access(&self, id: &str) -> Access {
+        let forced = read_only_forced();
+        let host = self.runtimes.lock().unwrap().get(id).and_then(|r| r.identity());
+        Access { writable: !forced && self.config.read().unwrap().allows_changes(id, host.as_deref()), forced }
+    }
+
+    /// Switches a connection's read-only mode off (`writable`) or on.
+    pub fn set_writable(&self, id: &str, writable: bool) -> Result<Access> {
+        if writable && read_only_forced() {
+            anyhow::bail!("Stackline was started read-only, so no connection can be changed.");
+        }
+        let host = self.runtimes.lock().unwrap().get(id).and_then(|r| r.identity());
+        if writable && host.is_none() {
+            anyhow::bail!("Wait until Stackline is connected: changes are allowed for the server it reaches.");
+        }
+        self.update_config(|c| {
+            c.writable.remove(id);
+            if let (true, Some(h)) = (writable, host) {
+                c.writable.insert(id.to_string(), h);
+            }
+        })?;
+        Ok(self.access(id))
     }
 
     pub fn store_path(&self) -> &std::path::Path {

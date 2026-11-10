@@ -49,6 +49,9 @@ pub enum Kind {
     Failed,
     /// The service runs something else than before; see `deploys`.
     Deploy,
+    /// A change made from Stackline: restart, stop, start or scale. `detail`
+    /// holds the docker command and how it went.
+    Action,
 }
 
 impl Kind {
@@ -62,11 +65,12 @@ impl Kind {
             Kind::Unhealthy => "unhealthy",
             Kind::Failed => "failed",
             Kind::Deploy => "deploy",
+            Kind::Action => "action",
         }
     }
 
     pub fn parse(s: &str) -> Option<Kind> {
-        [Kind::Start, Kind::Exit, Kind::Stop, Kind::Crash, Kind::Oom, Kind::Unhealthy, Kind::Failed, Kind::Deploy]
+        [Kind::Start, Kind::Exit, Kind::Stop, Kind::Crash, Kind::Oom, Kind::Unhealthy, Kind::Failed, Kind::Deploy, Kind::Action]
             .into_iter()
             .find(|k| k.as_str() == s)
     }

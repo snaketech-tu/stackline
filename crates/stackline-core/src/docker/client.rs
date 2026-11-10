@@ -1,13 +1,14 @@
 //! A deliberately small Docker Engine API client.
 //!
-//! Stackline is read-only by construction: this client can only send `GET`
-//! requests. There is no code path that creates, updates or removes anything.
+//! Everything Stackline reads goes through `get`. The only other request is
+//! `post`, used by `actions` alone, and only for a connection whose read-only
+//! mode was switched off. Nothing here creates or removes anything.
 
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use http_body_util::{BodyExt, Empty};
+use http_body_util::{BodyExt, Empty, Full};
 use hyper::body::Incoming;
 use hyper::header::{HOST, USER_AGENT};
 use hyper::{Method, Request, Response, StatusCode};
@@ -87,6 +88,39 @@ impl DockerClient {
             return Err(api_error(status, &body, path_and_query));
         }
         Ok(res.into_body())
+    }
+
+    /// Sends a POST with a JSON body (or none) and fails on a non-2xx status.
+    /// Only `actions` calls this.
+    pub async fn post(&self, path_and_query: &str, body: Option<&serde_json::Value>) -> Result<()> {
+        let fut = async {
+            let stream =
+                self.endpoint.connect().await.with_context(|| format!("could not reach Docker at {}", self.endpoint.describe()))?;
+            let (mut sender, conn) =
+                hyper::client::conn::http1::handshake(TokioIo::new(stream)).await.context("HTTP handshake with Docker failed")?;
+            tokio::spawn(async move {
+                let _ = conn.await;
+            });
+            let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
+            let req = Request::builder()
+                .method(Method::POST)
+                .uri(path_and_query)
+                .header(HOST, "docker")
+                .header(USER_AGENT, concat!("stackline/", env!("CARGO_PKG_VERSION")))
+                .header(hyper::header::CONTENT_TYPE, "application/json")
+                .body(Full::new(Bytes::from(bytes)))?;
+            let res = sender.send_request(req).await.context("Docker request failed")?;
+            let status = res.status();
+            let body = res.into_body().collect().await?.to_bytes();
+            if !status.is_success() {
+                return Err(api_error(status, &body, path_and_query));
+            }
+            Ok(())
+        };
+        // Stopping a container waits for its grace period, which can be long.
+        tokio::time::timeout(Duration::from_secs(120), fut)
+            .await
+            .map_err(|_| anyhow!("Docker did not answer {path_and_query} within 2 minutes"))?
     }
 
     pub async fn ping(&self) -> Result<()> {

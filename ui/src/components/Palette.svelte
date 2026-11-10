@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Ctrl K: jump to a service, stack, error group, page or connection.
+  // Ctrl K or `:`: jump to a service, stack, error group, page or connection, or run a command.
   import { onMount } from 'svelte'
   import { app, VIEWS } from '../lib/state.svelte'
   import { fetchLogs } from '../lib/api'
@@ -9,7 +9,7 @@
 
   type Item = { kind: string; label: string; right: string; text: string; run: () => void; logs?: () => void; html?: boolean }
 
-  let q = $state('')
+  let q = $state(app.paletteQ)
   let sel = $state(0)
   let input: HTMLInputElement | undefined = $state()
   let list: HTMLDivElement | undefined = $state()
@@ -40,14 +40,25 @@
     for (const st of app.snap?.stacks ?? []) {
       out.push({
         kind: 'Stack', label: st.name, text: `${st.name} stack`, right: `${st.services.length} services`,
-        run: () => { app.stackQ = st.name; app.stackFilter = 'all'; app.go('stacks') }, logs: () => app.showLogs([`stack:${st.name}`]),
+        run: () => app.drill('services', { stack: st.name }), logs: () => app.showLogs([`stack:${st.name}`]),
       })
     }
     for (const g of groups) {
       const p = g.pattern || firstLine(g.sample)
       out.push({ kind: 'Error', label: p, text: `${p} ${g.services.join(' ')} error`, right: `${g.count}× · ${g.services.join(', ')}`, run: () => app.showGroup(g.fp, g.services) })
     }
-    for (const [v, label] of VIEWS) out.push({ kind: 'Page', label, text: `${label} ${v}`, right: '', run: () => app.go(v) })
+    const ALIAS: Record<string, string> = { stacks: 'stack compose projects', services: 'svc service', tasks: 'ps containers task replicas', nodes: 'no node hosts', logs: 'log lines errors' }
+    for (const [v, label] of VIEWS) out.push({ kind: 'Page', label, text: `${label} ${v} ${ALIAS[v] ?? ''}`, right: '', run: () => app.go(v) })
+    if (app.scope) out.push({ kind: 'Action', label: 'Show all stacks again', text: 'all stacks scope clear', right: app.scope, run: () => (app.scope = '') })
+    for (const st of app.snap?.stacks ?? []) {
+      if (st.name !== app.scope) out.push({ kind: 'Action', label: `Narrow the lists to ${st.name}`, text: `scope narrow stack ${st.name}`, right: '', run: () => (app.scope = st.name) })
+    }
+    if (app.dock.tabs.length) out.push({ kind: 'Action', label: 'Close the log workspace', text: 'workspace dock close tabs', right: `${app.dock.tabs.length} tabs`, run: () => app.dock.closeAll() })
+    out.push({ kind: 'Action', label: 'Show every key', text: 'help keys shortcuts', right: '?', run: () => (app.help = true) })
+    if (app.snap && !app.access.forced)
+      out.push(app.access.writable
+        ? { kind: 'Action', label: `Make ${app.active?.name} read-only again`, text: 'read-only readonly lock access', right: '', run: () => app.setWritable(false) }
+        : { kind: 'Action', label: `Allow changes on ${app.active?.name}`, text: 'read-only readonly unlock write edit access restart scale', right: '', run: () => app.setWritable(true) })
     for (const c of app.connections) {
       if (c.id !== app.activeId) out.push({ kind: 'Connect', label: `Switch to ${c.name}`, text: `connection switch ${c.name}`, right: c.kind === 'ssh' ? 'SSH' : 'Local', run: () => app.select(c.id) })
     }
@@ -70,7 +81,8 @@
       const top = all.filter((x) => x.kind === 'Service' && (x.right.includes('★') || /^0\/[1-9]/.test(x.right)))
       return [...top, ...all.filter((x) => x.kind === 'Error').slice(0, 3), ...all.filter((x) => x.kind === 'Page')]
     }
-    return all.filter((x) => words.every((w) => x.text.toLowerCase().includes(w))).slice(0, 30)
+    // What it is called counts as much as its keywords: "allow changes" finds "Allow changes on …".
+    return all.filter((x) => words.every((w) => `${x.label} ${x.text}`.toLowerCase().includes(w))).slice(0, 30)
   })
   $effect(() => {
     void q
@@ -101,7 +113,7 @@
   <div class="pal" role="dialog" aria-modal="true" aria-label="Jump to">
     <div class="in">
       <Icon name="search" size={16} />
-      <input bind:this={input} bind:value={q} onkeydown={key} placeholder="Service, stack, error, page or connection…" autocomplete="off" spellcheck="false"
+      <input bind:this={input} bind:value={q} onkeydown={key} placeholder="Search or run a command: a service, stack, error, page…" autocomplete="off" spellcheck="false"
         role="combobox" aria-expanded="true" aria-controls="pal-list" aria-activedescendant="pal-{sel}" />
       <kbd>Esc</kbd>
     </div>

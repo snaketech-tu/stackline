@@ -25,6 +25,8 @@ export function eventLabel(e: DockerEvent): string {
       return (e.detail ? `failed: ${e.detail}` : 'failed') + code
     case 'deploy':
       return e.detail ? `deployed: ${e.detail}` : 'deployed'
+    case 'action':
+      return e.detail ? `changed: ${e.detail}` : 'changed by Stackline'
   }
 }
 
@@ -33,11 +35,15 @@ export function eventColor(e: DockerEvent): string {
   if (isCrash(e)) return 'var(--err)'
   if (e.kind === 'unhealthy') return 'var(--warn)'
   if (e.kind === 'deploy') return 'var(--accent)'
+  if (e.kind === 'action') return 'var(--info)'
   return 'var(--muted)'
 }
 
+/** Whether an event belongs to the whole service: a deploy, or a change made to all replicas. */
+export const isServiceWide = (e: DockerEvent) => e.kind === 'deploy' || (e.kind === 'action' && !e.replica)
+
 /** Who an event happened to: `shop_api #2`, or just the service for a deploy. */
-export const eventWho = (e: DockerEvent) => (e.kind === 'deploy' ? e.service : `${e.service} #${e.replica}`)
+export const eventWho = (e: DockerEvent) => (isServiceWide(e) ? e.service : `${e.service} #${e.replica}`)
 
 /** The 2 minutes before an event and 15 s after it, in milliseconds. */
 export function beforeEvent(e: DockerEvent): [number, number] {

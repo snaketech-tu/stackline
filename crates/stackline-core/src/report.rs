@@ -180,7 +180,8 @@ pub fn markdown(r: &Report) -> String {
             } else {
                 format!("- {} replica {}: {}", time_us(e.ts), e.replica, event_label(e))
             };
-            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty() && !matches!(e.kind, Kind::Failed | Kind::Deploy)) {
+            if let Some(d) = e.detail.as_deref().filter(|d| !d.is_empty() && !matches!(e.kind, Kind::Failed | Kind::Deploy | Kind::Action))
+            {
                 let _ = write!(line, " · {}", one_line(d));
             }
             o.push_str(&line);
@@ -287,6 +288,10 @@ fn event_label(e: &Event) -> String {
         Kind::Deploy => match e.detail.as_deref().filter(|d| !d.is_empty()) {
             Some(d) => format!("deployed: {d}"),
             None => "deployed".into(),
+        },
+        Kind::Action => match e.detail.as_deref().filter(|d| !d.is_empty()) {
+            Some(d) => format!("changed by Stackline: {}", one_line(d)),
+            None => "changed by Stackline".into(),
         },
         Kind::Failed => match e.detail.as_deref().filter(|d| !d.is_empty()) {
             Some(d) => format!("failed: {}{code}", one_line(d)),

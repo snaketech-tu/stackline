@@ -21,6 +21,14 @@ pub struct AppConfig {
     /// Which services' logs are collected, per connection id. Missing means all.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub collect: BTreeMap<String, Collect>,
+    /// Connections whose read-only mode was switched off, so Stackline may
+    /// restart, stop, start and scale their services, each with the server
+    /// it was switched off for (`swarm:<id>` or `engine:<id>`, see
+    /// `Snapshot::identity`). Changes are only allowed while the connection
+    /// reaches that same server. Every other connection, new ones too, is
+    /// read-only.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub writable: BTreeMap<String, String>,
 }
 
 /// The services of one connection whose logs Stackline reads and stores.
@@ -116,11 +124,17 @@ impl Default for AppConfig {
             settings: Settings::default(),
             pins: BTreeMap::new(),
             collect: BTreeMap::new(),
+            writable: BTreeMap::new(),
         }
     }
 }
 
 impl AppConfig {
+    /// Whether changes are allowed on connection `id` while it reaches `host`.
+    pub fn allows_changes(&self, id: &str, host: Option<&str>) -> bool {
+        host.is_some_and(|h| self.writable.get(id).is_some_and(|w| w == h))
+    }
+
     pub fn load(path: &Path) -> Result<AppConfig> {
         match std::fs::read(path) {
             Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
@@ -296,6 +310,18 @@ mod tests {
         AppConfig::default().save(&path).unwrap();
         assert!(AppConfig::load_or_set_aside(&path).unwrap().1.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn changes_are_allowed_only_on_the_server_they_were_allowed_for() {
+        let mut c = AppConfig::default();
+        assert!(!c.allows_changes("local", Some("engine:A")));
+        c.writable.insert("local".into(), "engine:A".into());
+        assert!(c.allows_changes("local", Some("engine:A")));
+        // The same connection reaching another server, or none yet, is read-only.
+        assert!(!c.allows_changes("local", Some("engine:B")));
+        assert!(!c.allows_changes("local", None));
+        assert!(!c.allows_changes("other", Some("engine:A")));
     }
 
     #[test]

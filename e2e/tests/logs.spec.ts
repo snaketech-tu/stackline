@@ -1,5 +1,5 @@
 import { expect, test } from '@playwright/test'
-import { nav, open } from './helpers'
+import { nav, open, serviceRow } from './helpers'
 
 test('a multi-line stack trace is one entry', async ({ page }) => {
   await open(page, 'logs')
@@ -29,8 +29,10 @@ test('log filters stay when you go to another page and back', async ({ page }) =
 })
 
 test('the source picked in Logs is kept after a reload', async ({ page }) => {
-  await open(page, 'stacks')
-  await page.getByRole('button', { name: /^Logs of .*worker$/ }).click()
+  await open(page, 'services')
+  await serviceRow(page, 'demo/worker').click()
+  // `o` opens the lines of the row on the Logs page.
+  await page.keyboard.press('o')
   await expect(page).toHaveURL(/#logs\?.*s=demo_worker/)
   const rows = page.locator('.stream .row .svc')
   await expect(rows.first()).toContainText('worker')
@@ -39,17 +41,17 @@ test('the source picked in Logs is kept after a reload', async ({ page }) => {
   expect(await rows.allTextContents()).not.toContainEqual(expect.stringMatching(/shop|app|caddy/))
 })
 
-test('the Stacks filters stay when you go to another page and back', async ({ page }) => {
-  await open(page, 'stacks')
-  await page.getByPlaceholder('Filter by service, image or stack').fill('shop')
+test('the list filters stay when you go to another page and back', async ({ page }) => {
+  await open(page, 'services')
+  await page.getByPlaceholder('Filter by name, image, stack or node').fill('shop')
   await expect(page.getByRole('row', { name: /worker/ })).toHaveCount(0)
   await nav(page, 'Overview')
-  await nav(page, 'Stacks & services')
-  await expect(page.getByPlaceholder('Filter by service, image or stack')).toHaveValue('shop')
+  await nav(page, /^Services/)
+  await expect(page.getByPlaceholder('Filter by name, image, stack or node')).toHaveValue('shop')
   await expect(page.getByRole('row', { name: /worker/ })).toHaveCount(0)
   await page.reload()
-  await expect(page.getByPlaceholder('Filter by service, image or stack')).toHaveValue('shop')
-  await page.getByPlaceholder('Filter by service, image or stack').fill('')
+  await expect(page.getByPlaceholder('Filter by name, image, stack or node')).toHaveValue('shop')
+  await page.getByPlaceholder('Filter by name, image, stack or node').fill('')
 })
 
 test('the address of the Logs page opens the same view in another tab', async ({ page, context }) => {

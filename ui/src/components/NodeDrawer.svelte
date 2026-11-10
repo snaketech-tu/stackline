@@ -18,7 +18,7 @@
   }
 </script>
 
-<Drawer title={n?.hostname ?? 'Node'}>
+<Drawer title={n?.hostname ?? 'Node'} kind="Node inspector" docked>
   {#if !n}
     <div class="empty">This node is gone.</div>
   {:else}
@@ -27,7 +27,8 @@
       <span class="pill">{nodeRole(n)}</span>
       {#if n.availability !== 'active'}<span class="pill warn">{n.availability}</span>{/if}
       <span class="spacer"></span>
-      {#if app.snap && app.snap.nodes.length > 1}<button class="btn" onclick={nodeLogs}>Logs from this node</button>{/if}
+      <button class="btn sm" onclick={() => app.drill('tasks', { node: n!.hostname })}>{app.snap?.mode === 'swarm' ? 'Tasks' : 'Containers'} on this node</button>
+      {#if app.snap && app.snap.nodes.length > 1}<button class="btn sm" onclick={nodeLogs}>Logs from this node</button>{/if}
     </div>
     <dl class="kv">
       <dt>Address</dt><dd>{n.addr || '–'}</dd>

@@ -1,5 +1,7 @@
-//! JSON API used by the UI. Every Docker access behind it is read-only; the
-//! only things written are Stackline's own settings and log exports.
+//! JSON API used by the UI. Every Docker access behind it is a read, except
+//! `POST /c/{id}/action`, which only works on a connection whose read-only
+//! mode was switched off (`PUT /c/{id}/access`). Besides that, the only things
+//! written are Stackline's own settings and log exports.
 
 use std::sync::Arc;
 
@@ -49,6 +51,8 @@ pub fn router() -> Router<Arc<AppState>> {
         .route("/connections/{id}", put(update_connection).delete(delete_connection))
         .route("/c/{id}/snapshot", get(snapshot))
         .route("/c/{id}/pins", put(put_pins))
+        .route("/c/{id}/access", put(put_access))
+        .route("/c/{id}/action", post(action))
         .route("/c/{id}/collect", put(put_collect))
         .route("/c/{id}/host", post(accept_host))
         .route("/c/{id}/usage", get(usage))
@@ -132,6 +136,10 @@ async fn update_connection(st: St, Path(id): Path<String>, Json(input): Json<Con
     st.manager.update_config(|c| {
         if let Some(cc) = c.connections.iter_mut().find(|x| x.id == id) {
             cc.name = input.name.trim().to_string();
+            // Another host is not the one someone allowed changes on: it starts read-only.
+            if cc.kind != input.kind {
+                c.writable.remove(&id);
+            }
             cc.kind = input.kind;
             updated = Some(cc.clone());
         }
@@ -146,6 +154,7 @@ async fn delete_connection(st: St, Path(id): Path<String>) -> Result<StatusCode,
         c.connections.retain(|x| x.id != id);
         c.pins.remove(&id);
         c.collect.remove(&id);
+        c.writable.remove(&id);
     })?;
     let store = st.manager.store.clone();
     tokio::task::spawn_blocking(move || store.clear(Some(&id))).await.map_err(|e| anyhow::anyhow!(e))??;
@@ -163,7 +172,46 @@ async fn snapshot(st: St, Path(id): Path<String>) -> Result<Json<Value>, ApiErro
     let mut cfg = st.manager.config();
     let pins = cfg.pins.remove(&id).unwrap_or_default();
     let collect = cfg.collect.remove(&id).unwrap_or_default();
-    Ok(Json(json!({ "state": rt.state(), "snapshot": rt.snapshot().as_deref(), "pins": pins, "collect": collect })))
+    Ok(Json(
+        json!({ "state": rt.state(), "snapshot": rt.snapshot().as_deref(), "pins": pins, "collect": collect, "access": st.manager.access(&id) }),
+    ))
+}
+
+#[derive(Deserialize)]
+struct AccessInput {
+    writable: bool,
+}
+
+/// Switches a connection's read-only mode off or on.
+async fn put_access(st: St, Path(id): Path<String>, Json(input): Json<AccessInput>) -> Result<Json<Value>, ApiError> {
+    st.manager.runtime(&id).ok_or_else(not_found)?;
+    let a = st.manager.set_writable(&id, input.writable).map_err(|e| ApiError(StatusCode::FORBIDDEN, format!("{e:#}")))?;
+    tracing::info!(connection = %id, writable = a.writable, "read-only mode changed");
+    Ok(Json(json!(a)))
+}
+
+/// Restarts, stops, starts or scales a service. Refused while the connection is read-only.
+async fn action(st: St, Path(id): Path<String>, Json(req): Json<stackline_core::actions::Request>) -> Result<Json<Value>, ApiError> {
+    let rt = st.manager.runtime(&id).ok_or_else(not_found)?;
+    let access = st.manager.access(&id);
+    let host = st.manager.config().writable.get(&id).cloned();
+    let (true, Some(host)) = (access.writable, host) else {
+        let why = if access.forced {
+            "Stackline was started read-only."
+        } else {
+            "This connection is read-only. Switch read-only off to make changes."
+        };
+        return Err(ApiError(StatusCode::FORBIDDEN, why.into()));
+    };
+    let plan = rt.act(&req, &host, &st.manager.config().settings, &st.manager.store).await.map_err(|e| {
+        let code = if e.is::<stackline_core::actions::Changed>() { StatusCode::CONFLICT } else { StatusCode::BAD_REQUEST };
+        ApiError(code, format!("{e:#}"))
+    })?;
+    // A dry run says what would happen; `done` is only sent once it happened.
+    if req.dry {
+        return Ok(Json(json!({ "command": plan.command, "calls": plan.calls.len(), "plan": plan.fingerprint() })));
+    }
+    Ok(Json(json!({ "done": plan.done, "command": plan.command })))
 }
 
 /// Replaces the pinned services of a connection. Each pin is `stack/service`.

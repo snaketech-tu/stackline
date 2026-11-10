@@ -182,7 +182,7 @@
 
   function keydown(e: KeyboardEvent) {
     const tag = (document.activeElement as HTMLElement | null)?.tagName
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.drawer || app.palette || e.ctrlKey || e.metaKey || e.altKey) return
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || app.drawer || app.palette || app.help || app.ask || e.ctrlKey || e.metaKey || e.altKey) return
     if (e.key === 'f') {
       L.maxi = !L.maxi
     } else if (e.key === '/') {
