@@ -161,7 +161,7 @@ pub async fn open(cfg: &ConnectionConfig) -> Result<(DockerClient, Option<SshTun
         }
         ConnectionKind::Ssh(t) => {
             let tunnel = SshTunnel::open(t).await?;
-            let client = DockerClient::new(Endpoint::Tcp(tunnel.local_addr().to_string()));
+            let client = DockerClient::new(tunnel.endpoint());
             Ok((client, Some(tunnel)))
         }
     }

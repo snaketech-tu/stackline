@@ -3,6 +3,14 @@
 Release notes for each version. The section of a version becomes the text of
 its GitHub release, and Stackline shows it in the update dialog.
 
+## Unreleased
+
+### Security
+- **SSH connections no longer open a port on this computer.** Stackline reached a server's Docker through a local TCP port that any program on the computer could also use, and a web page could try to. Whoever reaches that port controls the server's Docker. On macOS and Linux the connection now goes through a socket file in a folder only you can open, removed when Stackline stops. Windows still uses a local port for now
+
+### Fixed
+- **A Docker that accepted a request and then never answered stopped log collection for good.** Requests now give up after 30 seconds without an answer and are tried again on the next poll
+
 ## 0.5.1
 
 Logs no longer end without warning: the stream pages through every stored line, and long lines are stored whole.
